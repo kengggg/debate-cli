@@ -62,6 +62,7 @@ debate-cli "Will scrum die in the age of agentic AI coding?" --rounds 5 -o repor
 | `--tools` | Allow agents to read/write files and run commands |
 | `-o FILE` | Save report (`.json`, `.md`, `.html`, `.pdf`, or all if no extension) |
 | `--prompts FILE` | Custom prompts TOML file override |
+| `--autopilot` | Run without user interaction (agents debate autonomously) |
 | `--test` | Run preflight checks on all agents and exit |
 
 ### Context paths
@@ -75,6 +76,16 @@ debate-cli "Review this" --context ./src/main.py ./docs     # Mix of both
 ```
 
 Directories are filtered to common code/config extensions (.py, .rs, .ts, .js, .md, .toml, .yaml, .json).
+
+### Autopilot mode
+
+Run the full debate hands-free — agents debate autonomously, actions auto-execute with defaults, and you get the report at the end:
+
+```bash
+debate-cli "Should we rewrite in Rust?" --context ./src --rounds 4 --autopilot -o report
+```
+
+This skips all user steering prompts and action selection. Combine with `-o` to get reports automatically.
 
 ## Debate flow
 

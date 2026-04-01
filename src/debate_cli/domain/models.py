@@ -131,6 +131,7 @@ class DebateConfig:
     context_paths: list[str] = field(default_factory=list)
     max_rounds: int = 3
     allow_tools: bool = False
+    autopilot: bool = False
     output: Path | None = None
     prompts_path: Path | None = None
 

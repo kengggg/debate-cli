@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tools", action="store_true", help="Allow agents to use tools (file I/O, shell)")
     parser.add_argument("--output", "-o", help="Save debate log (.json, .md, or both if no extension)")
     parser.add_argument("--prompts", type=Path, help="Custom prompts TOML file")
+    parser.add_argument("--autopilot", action="store_true",
+                        help="Run without user interaction (agents debate autonomously)")
     parser.add_argument("--test", action="store_true", help="Run preflight checks on all agents and exit")
     return parser
 
@@ -59,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         context_paths=list(args.context),
         max_rounds=args.rounds,
         allow_tools=args.tools,
+        autopilot=args.autopilot,
         output=Path(args.output) if args.output else None,
         prompts_path=args.prompts,
     )
