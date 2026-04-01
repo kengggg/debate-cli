@@ -3,3 +3,5 @@ include/
 lib
 
 pyvenv.cfg
+
+debate-log.json
