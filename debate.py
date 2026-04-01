@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """debate-cli: Claude Code vs Codex debate orchestrator with Gemini moderator."""
 
-import argparse, json, subprocess, sys, os, re, textwrap, time
-from dataclasses import dataclass, field, asdict
+import argparse
+import json
+import re
+import subprocess
+import sys
+import textwrap
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 try:
@@ -12,6 +18,29 @@ except ModuleNotFoundError:
         import tomli as tomllib  # type: ignore[no-redef]
     except ModuleNotFoundError:
         tomllib = None  # type: ignore[assignment]
+
+
+CONTEXT_FILE_EXTENSIONS = {
+    ".json",
+    ".js",
+    ".jsx",
+    ".md",
+    ".py",
+    ".rs",
+    ".sh",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml",
+}
+MAX_CONTEXT_FILES_PER_DIR = 20
+MAX_DIRECT_FILE_CONTEXT_CHARS = 8000
+MAX_DIR_FILE_CONTEXT_CHARS = 4000
+STRUCTURED_SECTION_NAMES = ("STEEL MAN", "CONVERGENCE", "DIVERGENCE", "CONFIDENCE")
+STRUCTURED_SECTION_PATTERN = "|".join(re.escape(name) for name in STRUCTURED_SECTION_NAMES)
+ACTION_AGENTS = {"claude", "codex", "gemini", "user"}
+ACTION_TYPES = {"execute", "plan"}
 
 # ─── Terminal rendering ───────────────────────────────────────────────────────
 
@@ -465,20 +494,55 @@ _DEFAULT_PROMPTS = {
 def load_prompts(path: Path | None = None) -> dict[str, str]:
     """Load prompt templates from TOML file, falling back to built-in defaults."""
     prompts = dict(_DEFAULT_PROMPTS)
+    explicit_path = path is not None
 
     if path is None:
         path = Path(__file__).parent / "prompts.toml"
 
-    if path.exists() and tomllib is not None:
-        with open(path, "rb") as f:
-            custom = tomllib.load(f)
-        for key in prompts:
-            if key in custom and "template" in custom[key]:
-                prompts[key] = custom[key]["template"]
-    elif path.exists() and tomllib is None:
+    if not path.exists():
+        if explicit_path:
+            raise FileNotFoundError(f"Prompts file not found: {path}")
+        return prompts
+
+    if tomllib is None:
+        if explicit_path:
+            raise RuntimeError("Custom prompts require tomllib/tomli support")
         print_status("  ⚠️  prompts.toml found but tomllib/tomli not available — using defaults")
+        return prompts
+
+    try:
+        with path.open("rb") as f:
+            custom = tomllib.load(f)
+    except Exception as exc:
+        if explicit_path:
+            raise ValueError(f"Failed to parse prompts file {path}: {exc}") from exc
+        print_status(f"  ⚠️  Failed to parse prompts.toml ({exc}) — using defaults")
+        return prompts
+
+    for key in prompts:
+        section = custom.get(key)
+        if isinstance(section, dict) and isinstance(section.get("template"), str):
+            prompts[key] = section["template"]
 
     return prompts
+
+
+def render_prompt(prompts: dict[str, str], prompt_name: str, **values) -> str:
+    """Render a prompt template with a clearer error on missing placeholders."""
+    try:
+        template = prompts[prompt_name]
+    except KeyError as exc:
+        raise ValueError(f"Prompt template '{prompt_name}' is missing") from exc
+
+    try:
+        return template.format(**values)
+    except KeyError as exc:
+        missing = exc.args[0]
+        raise ValueError(
+            f"Prompt template '{prompt_name}' references unknown placeholder '{missing}'"
+        ) from exc
+    except ValueError as exc:
+        raise ValueError(f"Prompt template '{prompt_name}' is invalid: {exc}") from exc
 
 
 # ─── Agent callers ────────────────────────────────────────────────────────────
@@ -535,21 +599,58 @@ AGENT_CALLERS = {
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def load_context(paths: list[str]) -> str:
+    def _dedupe_key(path: Path) -> str:
+        try:
+            return str(path.resolve(strict=False))
+        except OSError:
+            return str(path.absolute())
+
+    def _read_context_file(path: Path, max_chars: int) -> str | None:
+        try:
+            text = path.read_text()
+        except (OSError, UnicodeDecodeError):
+            print_status(f"  ⚠️  Skipping {path} (unreadable)")
+            return None
+
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "\n... [truncated]"
+        return text
+
+    def _iter_directory_context_files(directory: Path) -> list[Path]:
+        files = []
+        try:
+            for candidate in directory.rglob("*"):
+                try:
+                    if candidate.is_file() and candidate.suffix.lower() in CONTEXT_FILE_EXTENSIONS:
+                        files.append(candidate)
+                except OSError:
+                    continue
+        except OSError as exc:
+            print_status(f"  ⚠️  Skipping {directory} ({exc})")
+            return []
+        return sorted(files)[:MAX_CONTEXT_FILES_PER_DIR]
+
     chunks = []
+    seen_paths = set()
     for p in paths:
         path = Path(p)
         if path.is_file():
-            try:
-                chunks.append(f"### {path.name}\n```\n{path.read_text()[:8000]}\n```")
-            except (UnicodeDecodeError, PermissionError):
-                print_status(f"  ⚠️  Skipping {path} (unreadable)")
+            key = _dedupe_key(path)
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            text = _read_context_file(path, MAX_DIRECT_FILE_CONTEXT_CHARS)
+            if text is not None:
+                chunks.append(f"### {path}\n```\n{text}\n```")
         elif path.is_dir():
-            for f in sorted(path.rglob("*"))[:20]:
-                if f.is_file() and f.suffix in ('.py', '.rs', '.ts', '.js', '.md', '.toml', '.yaml', '.json'):
-                    try:
-                        chunks.append(f"### {f.relative_to(path)}\n```\n{f.read_text()[:4000]}\n```")
-                    except (UnicodeDecodeError, PermissionError):
-                        pass
+            for f in _iter_directory_context_files(path):
+                key = _dedupe_key(f)
+                if key in seen_paths:
+                    continue
+                seen_paths.add(key)
+                text = _read_context_file(f, MAX_DIR_FILE_CONTEXT_CHARS)
+                if text is not None:
+                    chunks.append(f"### {f.relative_to(path)}\n```\n{text}\n```")
         else:
             print_status(f"  ⚠️  Context path not found: {p}")
     return "\n\n".join(chunks) if chunks else "(no context files)"
@@ -594,46 +695,55 @@ def parse_structured(text: str) -> dict:
     """Extract STEEL MAN/CONVERGENCE/DIVERGENCE/CONFIDENCE from agent output."""
     result = {"steel_man": "", "convergence": [], "divergence": [], "confidence": 0.5}
 
+    def _extract_section_body(section_name: str) -> str:
+        match = re.search(
+            rf"(?ims)^\s*(?:#+\s*)?{re.escape(section_name)}\s*:\s*(.*?)(?=^\s*(?:#+\s*)?"
+            rf"(?:{STRUCTURED_SECTION_PATTERN})\s*:|\Z)",
+            text,
+        )
+        return match.group(1).strip() if match else ""
+
+    def _extract_bullets(section_name: str) -> list[str]:
+        body = _extract_section_body(section_name)
+        if not body:
+            return []
+        points = []
+        for line in body.splitlines():
+            match = re.match(r"^\s*[-*]\s+(.*\S)\s*$", line)
+            if match:
+                points.append(match.group(1).strip())
+        return points
+
     # Extract confidence
-    conf_match = re.search(r"CONFIDENCE:\s*([\d.]+)", text)
+    conf_match = re.search(
+        r"(?im)^\s*(?:#+\s*)?CONFIDENCE\s*:\s*([0-9]+(?:\.[0-9]+)?)(%?)\b",
+        text,
+    )
     if conf_match:
         try:
-            result["confidence"] = min(1.0, max(0.0, float(conf_match.group(1))))
+            confidence = float(conf_match.group(1))
+            if conf_match.group(2) or confidence > 1.0:
+                confidence /= 100.0
+            result["confidence"] = min(1.0, max(0.0, confidence))
         except ValueError:
             pass
 
-    # Extract steel man (free text between STEEL MAN: and next section header)
-    sm_match = re.search(
-        r"STEEL MAN:\s*\n(.*?)(?=\n(?:CONVERGENCE|DIVERGENCE|CONFIDENCE):|\Z)",
-        text, re.DOTALL,
-    )
-    if sm_match:
-        steel_man = sm_match.group(1).strip()
-        if steel_man.upper() != "N/A":
-            result["steel_man"] = steel_man
+    steel_man = _extract_section_body("STEEL MAN")
+    if steel_man and steel_man.upper() != "N/A":
+        result["steel_man"] = steel_man
 
-    # Extract convergence/divergence bullet lists
-    sections = re.split(r"(CONVERGENCE:|DIVERGENCE:)", text)
-    current = None
-    for s in sections:
-        if "CONVERGENCE:" in s:
-            current = "convergence"
-        elif "DIVERGENCE:" in s:
-            current = "divergence"
-        elif current:
-            points = [l.strip().removeprefix("- ") for l in s.split("\n")
-                      if l.strip().startswith("- ")]
-            result[current] = points
-            current = None
+    result["convergence"] = _extract_bullets("CONVERGENCE")
+    result["divergence"] = _extract_bullets("DIVERGENCE")
     return result
 
 
 def parse_actions(text: str) -> list[dict]:
     """Parse ACTION lines from moderator's final summary."""
     actions = []
-    for line in text.split("\n"):
+    for line in text.splitlines():
         match = re.match(
-            r"ACTION\s+\d+:\s*(.+?)\s*\|\s*AGENT:\s*(\w+)\s*\|\s*TYPE:\s*(\w+)",
+            r"^\s*(?:[-*]\s*)?ACTION\s+\d+\s*:\s*(.+?)\s*\|\s*AGENT\s*:\s*(\w+)\s*\|\s*"
+            r"TYPE\s*:\s*(\w+)\s*$",
             line.strip(),
             re.IGNORECASE,
         )
@@ -646,10 +756,57 @@ def parse_actions(text: str) -> list[dict]:
     return actions
 
 
+def normalize_action_choice(choice: str, default_agent: str, default_mode: str) -> tuple[str | None, str | None]:
+    """Normalize interactive action choices and reject invalid modes early."""
+    raw = choice.strip().lower()
+    if not raw:
+        return default_agent, default_mode
+
+    if raw in {"e", "execute"}:
+        return default_agent, "execute"
+    if raw in {"p", "plan"}:
+        return default_agent, "plan"
+    if raw in {"s", "skip"}:
+        return None, None
+    if raw in ACTION_AGENTS:
+        return raw, default_mode
+
+    parts = [part.strip() for part in raw.split(":", 1)]
+    if len(parts) == 2:
+        agent_choice, mode_choice = parts
+        mode_aliases = {
+            "e": "execute",
+            "execute": "execute",
+            "p": "plan",
+            "plan": "plan",
+            "s": "skip",
+            "skip": "skip",
+        }
+        normalized_mode = mode_aliases.get(mode_choice)
+        if normalized_mode is None:
+            raise ValueError(f"Unknown action mode '{mode_choice}'")
+        if normalized_mode == "skip":
+            return None, None
+        return agent_choice, normalized_mode
+
+    raise ValueError(f"Unrecognized action choice '{choice}'")
+
+
+def positive_int(value: str) -> int:
+    """argparse type that rejects non-positive integers."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("rounds must be at least 1")
+    return parsed
+
+
 # ─── Markdown report generation ───────────────────────────────────────────────
 
 def generate_markdown_report(topic, history, moderations, user_inputs, final_raw, actions):
     """Generate a readable markdown transcript of the entire debate."""
+    def _cell(value) -> str:
+        return str(value).replace("|", r"\|").replace("\n", " ").strip()
+
     lines = [f"# Steel Man Debate: {topic}\n"]
 
     rounds_seen = sorted(set(t.round for t in history))
@@ -701,7 +858,11 @@ def generate_markdown_report(topic, history, moderations, user_inputs, final_raw
         lines.append("|---|--------|-------|------|")
         for i, a in enumerate(actions, 1):
             icon = AGENT_ICONS.get(a.get("agent", ""), "⚪")
-            lines.append(f"| {i} | {a['action']} | {icon} {a.get('agent', '?')} | {a.get('type', 'plan')} |")
+            agent_label = f"{icon} {a.get('agent', '?')}"
+            lines.append(
+                f"| {i} | {_cell(a['action'])} | {_cell(agent_label)} | "
+                f"{_cell(a.get('type', 'plan'))} |"
+            )
         lines.append("")
 
     return "\n".join(lines)
@@ -829,7 +990,6 @@ def run_preflight():
         passed = sum(1 for r in results if r["passed"])
         total = len(results)
         if passed == total:
-            print_convergence_reached.__wrapped__ if hasattr(print_convergence_reached, '__wrapped__') else None
             console.print()
             console.print(Align.center(
                 f"[bold bright_green]✅ All {total} checks passed — ready to debate![/]"
@@ -868,6 +1028,9 @@ def run_preflight():
 
 def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=None,
                prompts_path=None):
+    if max_rounds < 1:
+        raise ValueError("max_rounds must be at least 1")
+
     prompts = load_prompts(prompts_path)
     context = load_context(context_paths)
     context_block = f"## Context:\n{context}" if context != "(no context files)" else ""
@@ -897,7 +1060,9 @@ def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=Non
 
         # ── Debaters take turns ──
         for role, opponent in [("claude", "Codex"), ("codex", "Claude Code")]:
-            prompt = prompts["debate"].format(
+            prompt = render_prompt(
+                prompts,
+                "debate",
                 role=f"{role.upper()} (Agent {'A' if role == 'claude' else 'B'})",
                 opponent=opponent,
                 topic=topic,
@@ -944,7 +1109,9 @@ def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=Non
         if last_user and last_user.text:
             last_user_text = f"## User said after previous round:\n{last_user.text}"
 
-        mod_prompt = prompts["moderator"].format(
+        mod_prompt = render_prompt(
+            prompts,
+            "moderator",
             topic=topic,
             round=rnd,
             round_turns=round_turns_text,
@@ -1014,7 +1181,9 @@ def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=Non
         f"Round {u.round}: {u.text}" for u in user_inputs if u.text
     ) or "(user did not provide input)"
 
-    final_prompt = prompts["final_summary"].format(
+    final_prompt = render_prompt(
+        prompts,
+        "final_summary",
         topic=topic,
         full_history=format_history(history, moderations, user_inputs),
         user_inputs=user_inputs_text,
@@ -1042,30 +1211,34 @@ def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=Non
         print_status("Example: 'claude:e' = assign to claude + execute, 'p' = plan with suggested agent\n")
 
         for i, action in enumerate(actions):
+            default_agent = action["agent"] if action["agent"] in ACTION_AGENTS else "user"
+            default_mode = action["type"] if action["type"] in ACTION_TYPES else "plan"
             choice = ask_user(
                 f"Action {i+1}: {action['action']}\n"
-                f"  [{action['agent']}:{action['type']}]",
-                default=f"{action['agent']}:{action['type']}"
+                f"  [{default_agent}:{default_mode}]",
+                default=f"{default_agent}:{default_mode}"
             )
 
-            # Parse user's choice
-            parts = choice.lower().strip().split(":")
-            if len(parts) == 2:
-                agent_choice, mode_choice = parts[0].strip(), parts[1].strip()
-            elif choice.lower().strip() in ("e", "execute"):
-                agent_choice, mode_choice = action["agent"], "execute"
-            elif choice.lower().strip() in ("p", "plan"):
-                agent_choice, mode_choice = action["agent"], "plan"
-            elif choice.lower().strip() in ("s", "skip"):
+            try:
+                agent_choice, mode_choice = normalize_action_choice(
+                    choice, default_agent, default_mode
+                )
+            except ValueError as exc:
+                print_status(f"  ⚠️  {exc}; falling back to {default_agent}:{default_mode}")
+                agent_choice, mode_choice = default_agent, default_mode
+
+            if agent_choice is None or mode_choice is None:
                 print_status(f"  ⏭ Skipping action {i+1}")
                 continue
-            else:
-                agent_choice, mode_choice = action["agent"], action["type"]
 
             # Validate agent
             if agent_choice not in AGENT_CALLERS and agent_choice != "user":
-                print_status(f"  ⚠️  Unknown agent '{agent_choice}', falling back to {action['agent']}")
-                agent_choice = action["agent"]
+                print_status(f"  ⚠️  Unknown agent '{agent_choice}', falling back to {default_agent}")
+                agent_choice = default_agent
+
+            if mode_choice not in ACTION_TYPES:
+                print_status(f"  ⚠️  Unknown mode '{mode_choice}', falling back to {default_mode}")
+                mode_choice = default_mode
 
             if agent_choice == "user":
                 print_status(f"  📝 Action {i+1} assigned to you — skipping AI execution")
@@ -1077,7 +1250,9 @@ def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=Non
                 if mode_choice == "execute"
                 else "Produce a detailed plan for this action. Do NOT execute — just plan."
             )
-            exec_prompt = prompts["action_execution"].format(
+            exec_prompt = render_prompt(
+                prompts,
+                "action_execution",
                 topic=topic,
                 summary=final_raw[:3000],
                 action=action["action"],
@@ -1099,7 +1274,9 @@ def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=Non
     # ── Save log ──
     if output:
         out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         ext = out_path.suffix.lower()
+        completed_rounds = max((turn.round for turn in history), default=0)
 
         md_report = generate_markdown_report(
             topic, history, moderations, user_inputs, final_raw, actions
@@ -1110,7 +1287,9 @@ def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=Non
             print_status(f"\n💾 Markdown report saved to {out_path}")
         elif ext == ".json":
             log = {
-                "topic": topic, "rounds": max_rounds,
+                "topic": topic,
+                "rounds": max_rounds,
+                "completed_rounds": completed_rounds,
                 "turns": [asdict(t) for t in history],
                 "moderations": [asdict(m) for m in moderations],
                 "user_inputs": [asdict(u) for u in user_inputs],
@@ -1123,7 +1302,9 @@ def run_debate(topic, context_paths, max_rounds=3, allow_tools=False, output=Non
             json_path = out_path.with_suffix(".json")
             md_path = out_path.with_suffix(".md")
             log = {
-                "topic": topic, "rounds": max_rounds,
+                "topic": topic,
+                "rounds": max_rounds,
+                "completed_rounds": completed_rounds,
                 "turns": [asdict(t) for t in history],
                 "moderations": [asdict(m) for m in moderations],
                 "user_inputs": [asdict(u) for u in user_inputs],
@@ -1151,7 +1332,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("topic", nargs="?", help="The debate topic or question")
     parser.add_argument("--context", nargs="*", default=[], help="Files/dirs for context")
-    parser.add_argument("--rounds", type=int, default=3, help="Max debate rounds (default: 3)")
+    parser.add_argument(
+        "--rounds",
+        type=positive_int,
+        default=3,
+        help="Max debate rounds (default: 3)",
+    )
     parser.add_argument("--tools", action="store_true", help="Allow agents to use tools (file I/O, shell)")
     parser.add_argument("--output", "-o", help="Save debate log (.json, .md, or both if no extension)")
     parser.add_argument("--prompts", type=Path, help="Custom prompts TOML file (default: prompts.toml)")
