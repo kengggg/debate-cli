@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Steel Man Debate: {{ topic }}</title>
+<style>
+  @page {
+    size: A4;
+    margin: 2.5cm 2cm;
+    @top-center { content: "Steel Man Debate Report"; font-size: 9px; color: #94a3b8; }
+    @bottom-center { content: "Page " counter(page) " of " counter(pages); font-size: 9px; color: #94a3b8; }
+  }
+
+  :root {
+    --claude: #DC2626;
+    --codex: #2563EB;
+    --gemini: #D97706;
+    --user: #059669;
+    --bg: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --surface: #f8fafc;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: Charter, Georgia, "Times New Roman", serif;
+    font-size: 11pt;
+    line-height: 1.6;
+    color: var(--text);
+    background: var(--bg);
+  }
+
+  h1 {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 24pt;
+    font-weight: 700;
+    margin-bottom: 0.3em;
+    color: var(--text);
+  }
+  h2 {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 16pt;
+    font-weight: 600;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    padding-bottom: 0.3em;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 13pt;
+    font-weight: 600;
+    margin-top: 1.2em;
+    margin-bottom: 0.4em;
+  }
+  h4 {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 11pt;
+    font-weight: 600;
+    margin-top: 1em;
+    margin-bottom: 0.3em;
+  }
+
+  p { margin-bottom: 0.6em; }
+  ul, ol { margin: 0.4em 0 0.8em 1.5em; }
+  li { margin-bottom: 0.2em; }
+
+  .meta {
+    font-size: 10pt;
+    color: var(--muted);
+    margin-bottom: 1.5em;
+  }
+  .meta span { margin-right: 1.5em; }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1.5em 0;
+  }
+
+  /* Agent sections */
+  .agent-section {
+    border-left: 4px solid var(--border);
+    padding: 0.8em 1em;
+    margin: 0.8em 0;
+    background: var(--surface);
+    border-radius: 0 6px 6px 0;
+    page-break-inside: avoid;
+  }
+  .agent-section.claude { border-left-color: var(--claude); }
+  .agent-section.codex { border-left-color: var(--codex); }
+  .agent-section.gemini { border-left-color: var(--gemini); }
+  .agent-section.user { border-left-color: var(--user); }
+
+  .agent-header {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-weight: 700;
+    font-size: 11pt;
+    margin-bottom: 0.5em;
+  }
+  .agent-header.claude { color: var(--claude); }
+  .agent-header.codex { color: var(--codex); }
+  .agent-header.gemini { color: var(--gemini); }
+  .agent-header.user { color: var(--user); }
+
+  /* Confidence bar */
+  .confidence-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    margin: 0.3em 0 0.6em 0;
+    font-size: 9pt;
+    color: var(--muted);
+  }
+  .confidence-track {
+    width: 120px;
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .confidence-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s;
+  }
+  .confidence-fill.high { background: #16a34a; }
+  .confidence-fill.mid { background: #ca8a04; }
+  .confidence-fill.low { background: #dc2626; }
+
+  /* Steel man blockquote */
+  .steel-man {
+    border-left: 3px solid #cbd5e1;
+    padding: 0.4em 0.8em;
+    margin: 0.5em 0;
+    color: var(--muted);
+    font-style: italic;
+    font-size: 10pt;
+  }
+  .steel-man-label {
+    font-size: 9pt;
+    font-weight: 600;
+    color: #94a3b8;
+    margin-bottom: 0.2em;
+    font-style: normal;
+  }
+
+  /* Points */
+  .points { font-size: 10pt; margin: 0.3em 0; }
+  .points.agree { color: #16a34a; }
+  .points.disagree { color: #dc2626; }
+  .points strong { font-weight: 600; }
+
+  /* Convergence meter */
+  .convergence-meter {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    margin: 0.8em 0;
+    font-size: 9pt;
+  }
+  .meter-track {
+    width: 160px;
+    height: 10px;
+    background: var(--border);
+    border-radius: 5px;
+    overflow: hidden;
+  }
+  .meter-fill {
+    height: 100%;
+    border-radius: 5px;
+  }
+  .meter-fill.high { background: #16a34a; }
+  .meter-fill.mid { background: #ca8a04; }
+  .meter-fill.low { background: #dc2626; }
+  .meter-label { color: var(--muted); font-weight: 600; }
+
+  /* Actions table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10pt;
+    margin: 0.8em 0;
+  }
+  th {
+    background: var(--surface);
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-weight: 600;
+    text-align: left;
+    padding: 0.5em 0.8em;
+    border-bottom: 2px solid var(--border);
+  }
+  td {
+    padding: 0.5em 0.8em;
+    border-bottom: 1px solid var(--border);
+  }
+  tr:nth-child(even) td { background: var(--surface); }
+
+  .badge {
+    display: inline-block;
+    padding: 0.15em 0.5em;
+    border-radius: 3px;
+    font-size: 9pt;
+    font-weight: 600;
+  }
+  .badge.execute { background: #dcfce7; color: #166534; }
+  .badge.plan { background: #fef9c3; color: #854d0e; }
+
+  /* SVG chart */
+  .chart-container {
+    margin: 1.5em 0;
+    text-align: center;
+  }
+  .chart-title {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 10pt;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 0.5em;
+  }
+
+  /* Page breaks */
+  .page-break { page-break-before: always; }
+
+  /* Summary box */
+  .summary-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1em 1.2em;
+    margin: 1em 0;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<h1>Steel Man Debate Report</h1>
+<div class="meta">
+  <span><strong>Topic:</strong> {{ topic }}</span><br>
+  <span><strong>Date:</strong> {{ date }}</span>
+  <span><strong>Rounds:</strong> {{ completed_rounds }}</span>
+  <span><strong>Agents:</strong> Claude vs Codex</span>
+  <span><strong>Moderator:</strong> Gemini</span>
+</div>
+<hr>
+
+<!-- ── Executive Summary ── -->
+<h2>Executive Summary</h2>
+<div class="summary-box">
+  {{ final_summary_html }}
+</div>
+
+{% if consensus_points %}
+<h3>Consensus Points</h3>
+<ul>
+{% for point in consensus_points %}
+  <li>{{ point }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if disagreement_points %}
+<h3>Unresolved Disagreements</h3>
+<ul>
+{% for point in disagreement_points %}
+  <li>{{ point }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if actions %}
+<h3>Recommended Actions</h3>
+<table>
+  <thead>
+    <tr><th>#</th><th>Action</th><th>Agent</th><th>Type</th></tr>
+  </thead>
+  <tbody>
+  {% for action in actions %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ action.action }}</td>
+      <td>{{ action.icon }} {{ action.agent }}</td>
+      <td><span class="badge {{ action.mode }}">{{ action.mode }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- ── Convergence Trend ── -->
+{% if convergence_data|length > 1 %}
+<div class="chart-container">
+  <div class="chart-title">Convergence Trend Across Rounds</div>
+  {{ convergence_svg }}
+</div>
+{% endif %}
+
+<hr>
+
+<!-- ── Debate Transcript ── -->
+<div class="page-break"></div>
+<h2>Debate Transcript</h2>
+
+{% for round in rounds %}
+<h3>Round {{ round.number }}</h3>
+
+{% for turn in round.turns %}
+<div class="agent-section {{ turn.agent }}">
+  <div class="agent-header {{ turn.agent }}">{{ turn.icon }} {{ turn.agent_upper }}</div>
+  <div class="confidence-bar">
+    <div class="confidence-track">
+      <div class="confidence-fill {{ turn.confidence_class }}" style="width: {{ turn.confidence_pct }}%"></div>
+    </div>
+    <span>{{ turn.confidence_pct }}% confidence</span>
+  </div>
+
+  {% if turn.steel_man %}
+  <div class="steel-man">
+    <div class="steel-man-label">Steel Man of {{ turn.opponent }}'s argument:</div>
+    {{ turn.steel_man }}
+  </div>
+  {% endif %}
+
+  <div class="position">{{ turn.position_html }}</div>
+
+  {% if turn.convergence %}
+  <div class="points agree"><strong>Agrees on:</strong> {{ turn.convergence | join("; ") }}</div>
+  {% endif %}
+  {% if turn.divergence %}
+  <div class="points disagree"><strong>Disagrees on:</strong> {{ turn.divergence | join("; ") }}</div>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% if round.moderation %}
+<div class="agent-section gemini">
+  <div class="agent-header gemini">🟡 Moderator Assessment</div>
+  {{ round.moderation_html }}
+</div>
+{% endif %}
+
+{% if round.user_input %}
+<div class="agent-section user">
+  <div class="agent-header user">👤 User Steering</div>
+  <p>{{ round.user_input }}</p>
+</div>
+{% endif %}
+
+{% if round.overlap is not none %}
+<div class="convergence-meter">
+  <span class="meter-label">Convergence:</span>
+  <div class="meter-track">
+    <div class="meter-fill {{ round.overlap_class }}" style="width: {{ round.overlap_pct }}%"></div>
+  </div>
+  <span>{{ round.overlap_pct }}%</span>
+</div>
+{% endif %}
+
+{% if not loop.last %}<hr>{% endif %}
+{% endfor %}
+
+</body>
+</html>

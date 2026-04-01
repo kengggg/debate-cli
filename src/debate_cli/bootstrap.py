@@ -34,7 +34,7 @@ def build_application() -> ApplicationServices:
     context_loader = FilesystemContextLoader()
     renderer = build_renderer(agent_registry)
     report_writer = FileReportWriter(agent_registry)
-    debate_service = DebateService(prompt_repository, context_loader, renderer, agent_registry)
+    debate_service = DebateService(prompt_repository, context_loader, renderer, agent_registry, report_writer)
     preflight_service = PreflightService(prompt_repository, agent_registry)
     return ApplicationServices(
         agent_registry=agent_registry,

@@ -17,25 +17,7 @@ Topic: {topic}
 
 {user_input_block}
 
-## Your instructions:
-1. If this is NOT the first round, you MUST first STEEL MAN your opponent's strongest
-   argument from the previous round. Present it as charitably and accurately as possible
-   - show that you truly understand their best case before you counter it.
-2. State your own position clearly and concisely.
-3. If useful, read files or run commands to gather evidence.
-4. Respond to the moderator's guidance and the user's input if provided.
-5. End your response with EXACTLY this structured block:
-
-STEEL MAN:
-[Your charitable restatement of opponent's strongest argument. Write "N/A" if first round.]
-
-CONVERGENCE:
-- [point you agree with opponent on]
-
-DIVERGENCE:
-- [point you disagree on]
-
-CONFIDENCE: [0.0 to 1.0]
+{round_instructions}
 """
 
 [moderator]
@@ -50,27 +32,7 @@ Topic: {topic}
 
 {user_input_block}
 
-## Your tasks:
-1. **Summarize** this round: what each agent argued, where they agree, where they diverge.
-2. **Evaluate steel man quality**: Did each agent accurately and charitably represent their
-   opponent's strongest argument? Call out any distortions, straw men, or weak steel mans.
-3. **Evaluate** the strength of each argument. Be critical - call out weak reasoning.
-4. **Steer** the next round: suggest what each agent should focus on or investigate.
-   Be specific - "Claude should benchmark X" or "Codex should address the scalability concern".
-5. If the debate seems to be going in circles, say so.
-
-Format your response as:
-
-## Summary
-[your summary]
-
-## Steel Man Quality
-- Claude's steel man: [evaluation]
-- Codex's steel man: [evaluation]
-
-## Focus for Next Round
-- Claude should: [specific guidance]
-- Codex should: [specific guidance]
+{moderator_round_instructions}
 """
 
 [final_summary]
@@ -91,14 +53,30 @@ Topic: {topic}
 2. Note how the steel man process affected the debate - did it lead to better understanding?
 3. List the **points of consensus** (what both agents agree on).
 4. List the **unresolved disagreements** and your recommendation on each.
-5. Produce a **numbered action list** - concrete next steps the user should take.
-   For each action, suggest which agent (claude, codex, gemini, or user) is best suited.
+5. Produce a **numbered action list** of recommended next steps.
+   Think carefully about what kind of debate this was:
+   - If the debate was about a technical implementation or codebase, suggest concrete
+     actions with agents who can execute code changes or produce plans.
+   - If the debate was philosophical, strategic, or opinion-based, suggest reflective
+     actions like continuing the debate, exporting the report, or further research.
+   - Always consider including an export action so the user can save the debate.
+
+   Available action types:
+   - execute: An agent modifies files, runs commands, or makes changes
+   - plan: An agent produces a detailed plan without executing
+   - continue: Recommend continuing the debate with more rounds on a specific focus
+   - export: Export this debate to a shareable report
+
+   Available agents:
+   - claude, codex, gemini: for AI-driven actions
+   - user: for actions the human should take themselves
+   - system: for built-in actions (continue, export)
 
 Format the action list EXACTLY like this (one per line, parseable):
 
 ## Actions
-ACTION 1: [description] | AGENT: [claude/codex/gemini/user] | TYPE: [execute/plan]
-ACTION 2: [description] | AGENT: [claude/codex/gemini/user] | TYPE: [execute/plan]
+ACTION 1: [description] | AGENT: [claude/codex/gemini/user/system] | TYPE: [execute/plan/continue/export]
+ACTION 2: [description] | AGENT: [claude/codex/gemini/user/system] | TYPE: [execute/plan/continue/export]
 ...
 """
 

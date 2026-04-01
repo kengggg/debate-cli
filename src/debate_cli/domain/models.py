@@ -13,6 +13,8 @@ class ActionMode(StrEnum):
 
     EXECUTE = "execute"
     PLAN = "plan"
+    CONTINUE = "continue"
+    EXPORT = "export"
 
 
 @dataclass(frozen=True)

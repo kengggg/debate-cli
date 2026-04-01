@@ -360,6 +360,8 @@ if _RICH_AVAILABLE:
             type_styles = {
                 "execute": "[bold green]execute[/]",
                 "plan": "[bold yellow]plan[/]",
+                "continue": "[bold cyan]continue[/]",
+                "export": "[bold magenta]export[/]",
             }
             for index, action in enumerate(actions, start=1):
                 icon, _color, _spinner = self._metadata(action.agent)

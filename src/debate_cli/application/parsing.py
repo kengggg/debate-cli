@@ -15,6 +15,10 @@ MODE_ALIASES = {
     "execute": ActionMode.EXECUTE,
     "p": ActionMode.PLAN,
     "plan": ActionMode.PLAN,
+    "c": ActionMode.CONTINUE,
+    "continue": ActionMode.CONTINUE,
+    "x": ActionMode.EXPORT,
+    "export": ActionMode.EXPORT,
 }
 SKIP_ALIASES = {"s", "skip"}
 

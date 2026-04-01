@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from debate_cli.application.contracts import AgentRegistry, ContextLoader, PromptRepository, Renderer
+import random
+from pathlib import Path
+
+from debate_cli.application.contracts import AgentRegistry, ContextLoader, PromptRepository, Renderer, ReportWriter
 from debate_cli.application.parsing import (
     calculate_convergence_overlap,
     extract_focus_next_round,
@@ -21,6 +24,87 @@ from debate_cli.domain.models import (
     UserInput,
 )
 
+# ── Round-aware instruction blocks ──────────────────────────────────────────
+
+OPENING_ROUND_INSTRUCTIONS = """\
+## Your instructions (Opening Round):
+This is the OPENING ROUND. State your initial position clearly and concisely.
+There is no opponent argument yet, so do NOT produce STEEL MAN, CONVERGENCE,
+or DIVERGENCE sections.
+
+If useful, read files or run commands to gather evidence for your position.
+
+End your response with ONLY:
+
+CONFIDENCE: [0.0 to 1.0]
+"""
+
+STANDARD_ROUND_INSTRUCTIONS = """\
+## Your instructions:
+1. You MUST first STEEL MAN your opponent's strongest argument from the previous
+   round. Present it as charitably and accurately as possible — show that you
+   truly understand their best case before you counter it.
+2. State your own position clearly and concisely.
+3. If useful, read files or run commands to gather evidence.
+4. Respond to the moderator's guidance and the user's input if provided.
+5. End your response with EXACTLY this structured block:
+
+STEEL MAN:
+[Your charitable restatement of opponent's strongest argument.]
+
+CONVERGENCE:
+- [point you agree with opponent on]
+
+DIVERGENCE:
+- [point you disagree on]
+
+CONFIDENCE: [0.0 to 1.0]
+"""
+
+OPENING_MODERATOR_INSTRUCTIONS = """\
+## Your tasks (Opening Round):
+This is the opening round. The agents are stating their initial positions.
+1. **Summarize** each agent's opening position and initial stance.
+2. **Evaluate** the strength and clarity of each opening argument.
+3. **Steer** the next round: suggest what each agent should address or investigate.
+   Be specific — "Claude should benchmark X" or "Codex should address the scalability concern".
+
+Do NOT expect convergence, divergence, or steel mans yet — this is the first exchange.
+
+Format your response as:
+
+## Summary
+[your summary of opening positions]
+
+## Focus for Next Round
+- Claude should: [specific guidance]
+- Codex should: [specific guidance]
+"""
+
+STANDARD_MODERATOR_INSTRUCTIONS = """\
+## Your tasks:
+1. **Summarize** this round: what each agent argued, where they agree, where they diverge.
+2. **Evaluate steel man quality**: Did each agent accurately and charitably represent their
+   opponent's strongest argument? Call out any distortions, straw men, or weak steel mans.
+3. **Evaluate** the strength of each argument. Be critical - call out weak reasoning.
+4. **Steer** the next round: suggest what each agent should focus on or investigate.
+   Be specific - "Claude should benchmark X" or "Codex should address the scalability concern".
+5. If the debate seems to be going in circles, say so.
+
+Format your response as:
+
+## Summary
+[your summary]
+
+## Steel Man Quality
+- Claude's steel man: [evaluation]
+- Codex's steel man: [evaluation]
+
+## Focus for Next Round
+- Claude should: [specific guidance]
+- Codex should: [specific guidance]
+"""
+
 
 class DebateService:
     """Run the full debate workflow."""
@@ -31,11 +115,13 @@ class DebateService:
         context_loader: ContextLoader,
         renderer: Renderer,
         agent_registry: AgentRegistry,
+        report_writer: ReportWriter | None = None,
     ):
         self._prompt_repository = prompt_repository
         self._context_loader = context_loader
         self._renderer = renderer
         self._agent_registry = agent_registry
+        self._report_writer = report_writer
 
     def run(self, config: DebateConfig) -> DebateResult:
         """Run a debate session and return the canonical result."""
@@ -60,6 +146,12 @@ class DebateService:
                 self._renderer.print_round_transition()
             self._renderer.print_round_progress(round_number, config.max_rounds)
 
+            # Randomize who speaks first each round
+            round_pairs = list(debate_pairs)
+            random.shuffle(round_pairs)
+            first_speaker = round_pairs[0][0]
+            self._renderer.print_status(f"  {first_speaker.capitalize()} opens this round")
+
             last_moderation = next(
                 (moderation for moderation in result.moderations if moderation.round == round_number - 1),
                 None,
@@ -78,7 +170,11 @@ class DebateService:
             if last_user_input and last_user_input.text:
                 user_input_block = "## User's direction:\n" + last_user_input.text
 
-            for role, opponent in debate_pairs:
+            round_instructions = (
+                OPENING_ROUND_INSTRUCTIONS if round_number == 1 else STANDARD_ROUND_INSTRUCTIONS
+            )
+
+            for role, opponent in round_pairs:
                 prompt = prompts.render(
                     "debate",
                     role=f"{role.upper()} (Agent {'A' if role == 'claude' else 'B'})",
@@ -88,6 +184,7 @@ class DebateService:
                     history=format_history(result.turns, result.moderations, result.user_inputs),
                     moderator_guidance=moderator_guidance,
                     user_input_block=user_input_block,
+                    round_instructions=round_instructions,
                 )
 
                 errored = False
@@ -126,12 +223,17 @@ class DebateService:
             if last_user_input and last_user_input.text:
                 last_user_text = f"## User said after previous round:\n{last_user_input.text}"
 
+            moderator_round_instructions = (
+                OPENING_MODERATOR_INSTRUCTIONS if round_number == 1
+                else STANDARD_MODERATOR_INSTRUCTIONS
+            )
             moderator_prompt = prompts.render(
                 "moderator",
                 topic=config.topic,
                 round=round_number,
                 round_turns=round_turns_text,
                 user_input_block=last_user_text,
+                moderator_round_instructions=moderator_round_instructions,
             )
 
             with self._renderer.agent_spinner("gemini"):
@@ -153,24 +255,26 @@ class DebateService:
             result.moderations.append(moderation)
             self._renderer.print_agent("gemini", moderator_raw)
 
-            claude_turn = next(
-                (turn for turn in result.turns if turn.round == round_number and turn.agent == "claude"),
-                None,
-            )
-            codex_turn = next(
-                (turn for turn in result.turns if turn.round == round_number and turn.agent == "codex"),
-                None,
-            )
-            if claude_turn and codex_turn:
-                self._renderer.print_round_comparison(claude_turn, codex_turn)
-                overlap = calculate_convergence_overlap(
-                    claude_turn.convergence,
-                    codex_turn.convergence,
+            # Convergence check — skip opening round (no structured output yet)
+            if round_number > 1:
+                claude_turn = next(
+                    (turn for turn in result.turns if turn.round == round_number and turn.agent == "claude"),
+                    None,
                 )
-                self._renderer.print_convergence_meter(overlap)
-                if claude_turn.confidence > 0.8 and codex_turn.confidence > 0.8 and overlap > 0.4:
-                    self._renderer.print_convergence_reached()
-                    break
+                codex_turn = next(
+                    (turn for turn in result.turns if turn.round == round_number and turn.agent == "codex"),
+                    None,
+                )
+                if claude_turn and codex_turn:
+                    self._renderer.print_round_comparison(claude_turn, codex_turn)
+                    overlap = calculate_convergence_overlap(
+                        claude_turn.convergence,
+                        codex_turn.convergence,
+                    )
+                    self._renderer.print_convergence_meter(overlap)
+                    if claude_turn.confidence > 0.8 and codex_turn.confidence > 0.8 and overlap > 0.4:
+                        self._renderer.print_convergence_reached()
+                        break
 
             if round_number < config.max_rounds:
                 user_text = self._renderer.ask_user(
@@ -213,13 +317,10 @@ class DebateService:
         if result.actions:
             self._renderer.print_actions_table(result.actions)
             self._renderer.print_status(
-                "For each action, choose: (e)xecute, (p)lan, (s)kip, or reassign agent"
+                "For each action: (e)xecute, (p)lan, (c)ontinue, e(x)port, (s)kip, or reassign"
             )
             self._renderer.print_status(
-                "Format: press Enter for defaults, or type e/p/s or agent:e/agent:p"
-            )
-            self._renderer.print_status(
-                "Example: 'claude:e' = assign to claude + execute, 'p' = plan with suggested agent\n"
+                "Format: press Enter for defaults, or type e/p/c/x/s or agent:e/agent:p\n"
             )
 
             for index, action in enumerate(result.actions, start=1):
@@ -251,6 +352,36 @@ class DebateService:
                     self._renderer.print_status(
                         f"  📝 Action {index} assigned to you - skipping AI execution"
                     )
+                    continue
+
+                if selection.mode == ActionMode.CONTINUE:
+                    self._renderer.print_status(
+                        "  💡 To continue this debate, re-run with more rounds:\n"
+                        f'     debate-cli "{config.topic}" --rounds N'
+                    )
+                    continue
+
+                if selection.mode == ActionMode.EXPORT:
+                    if self._report_writer and config.output:
+                        paths = self._report_writer.write(result, config.output)
+                        self._renderer.print_status(
+                            f"  💾 Exported: {', '.join(str(p) for p in paths)}"
+                        )
+                    elif self._report_writer:
+                        # No output path specified — ask user or suggest
+                        export_path = self._renderer.ask_user(
+                            "Export path (e.g., report.pdf, report.md):",
+                            default="debate-report",
+                        )
+                        if export_path:
+                            paths = self._report_writer.write(result, Path(export_path))
+                            self._renderer.print_status(
+                                f"  💾 Exported: {', '.join(str(p) for p in paths)}"
+                            )
+                    else:
+                        self._renderer.print_status(
+                            "  💾 Use -o <path> to export (e.g., -o report.pdf)"
+                        )
                     continue
 
                 instruction = (

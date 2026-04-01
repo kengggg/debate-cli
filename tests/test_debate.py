@@ -215,9 +215,9 @@ class FakePromptRepository:
         return PromptTemplates(
             debate=(
                 "Topic: {topic}\n{context_block}\n{history}\n{moderator_guidance}\n{user_input_block}\n"
-                "Role: {role}\nOpponent: {opponent}"
+                "Role: {role}\nOpponent: {opponent}\n{round_instructions}"
             ),
-            moderator="Moderator round {round}\n{round_turns}\n{user_input_block}",
+            moderator="Moderator round {round}\n{round_turns}\n{user_input_block}\n{moderator_round_instructions}",
             final_summary="Final summary for {topic}\n## Actions",
             action_execution="Action {action} in {mode}",
         )
@@ -232,13 +232,23 @@ class DebateServiceTests(unittest.TestCase):
     def test_service_stops_early_on_convergence(self):
         responses = {
             "claude": [
-                "STEEL MAN:\nN/A\n\nCONVERGENCE:\n- shared approach\n\nDIVERGENCE:\n- more speed\n\nCONFIDENCE: 0.9",
+                # Round 1: opening statement (no structured sections expected)
+                "My opening position.\n\nCONFIDENCE: 0.6",
+                # Round 2: converging
+                "STEEL MAN:\nCodex is right about X.\n\nCONVERGENCE:\n- shared approach\n\nDIVERGENCE:\n- more speed\n\nCONFIDENCE: 0.9",
             ],
             "codex": [
-                "STEEL MAN:\nN/A\n\nCONVERGENCE:\n- shared approach\n\nDIVERGENCE:\n- more safety\n\nCONFIDENCE: 0.95",
+                # Round 1: opening statement
+                "My opening position.\n\nCONFIDENCE: 0.65",
+                # Round 2: converging
+                "STEEL MAN:\nClaude is right about Y.\n\nCONVERGENCE:\n- shared approach\n\nDIVERGENCE:\n- more safety\n\nCONFIDENCE: 0.95",
             ],
             "gemini": [
+                # Round 1 moderation
+                "## Summary\nOpening positions stated.\n\n## Focus for Next Round\n- Claude should: elaborate\n- Codex should: elaborate",
+                # Round 2 moderation
                 "## Summary\nLooks aligned.\n\n## Focus for Next Round\n- Claude should: none\n- Codex should: none",
+                # Final summary
                 "Final summary\n## Actions",
             ],
         }
@@ -251,9 +261,9 @@ class DebateServiceTests(unittest.TestCase):
 
         result = service.run(DebateConfig(topic="test topic", max_rounds=3))
 
-        self.assertEqual(result.completed_rounds, 1)
-        self.assertEqual(len(result.turns), 2)
-        self.assertEqual(len(result.moderations), 1)
+        self.assertEqual(result.completed_rounds, 2)
+        self.assertEqual(len(result.turns), 4)  # 2 per round
+        self.assertEqual(len(result.moderations), 2)
         self.assertEqual(result.actions, [])
 
 
@@ -277,7 +287,8 @@ class ReportWriterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             written = writer.write(service_result, Path(tmp) / "debate")
 
-        self.assertEqual({path.suffix for path in written}, {".json", ".md"})
+        suffixes = {path.suffix for path in written}
+        self.assertTrue({".json", ".md"}.issubset(suffixes))
 
 
 class PreflightTests(unittest.TestCase):
