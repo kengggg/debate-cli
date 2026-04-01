@@ -1,0 +1,4 @@
+# Convenience editable install for local development.
+# Package metadata and runtime dependencies live in pyproject.toml.
+# Optional Rich UI: pip install -e ".[rich]"
+-e .

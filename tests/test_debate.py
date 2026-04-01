@@ -1,9 +1,24 @@
 import argparse
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-import debate
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from debate_cli.application.debate_service import DebateService
+from debate_cli.application.parsing import normalize_action_choice, parse_actions, parse_structured
+from debate_cli.application.preflight import PreflightService
+from debate_cli.cli import positive_int
+from debate_cli.domain.models import ActionMode, AgentDefinition, DebateConfig, PromptTemplates
+from debate_cli.infrastructure.context import FilesystemContextLoader
+from debate_cli.infrastructure.agents import CommandAgentClient
+from debate_cli.infrastructure.prompts import TomlPromptRepository
+from debate_cli.infrastructure.reports import FileReportWriter
 
 
 class ParseStructuredTests(unittest.TestCase):
@@ -22,21 +37,18 @@ class ParseStructuredTests(unittest.TestCase):
         ## CONFIDENCE: 85%
         """
 
-        parsed = debate.parse_structured(text)
+        parsed = parse_structured(text)
 
         self.assertEqual(
-            parsed["steel_man"],
+            parsed.steel_man,
             "The strongest case is that a monolith keeps changes coordinated.",
         )
         self.assertEqual(
-            parsed["convergence"],
+            parsed.convergence,
             ["Shared schemas matter", "Operational simplicity is valuable"],
         )
-        self.assertEqual(
-            parsed["divergence"],
-            ["Deployment isolation is worth the overhead"],
-        )
-        self.assertEqual(parsed["confidence"], 0.85)
+        self.assertEqual(parsed.divergence, ["Deployment isolation is worth the overhead"])
+        self.assertEqual(parsed.confidence, 0.85)
 
     def test_parse_actions_accepts_bulleted_action_lines(self):
         text = """
@@ -44,19 +56,20 @@ class ParseStructuredTests(unittest.TestCase):
         * ACTION 2: Review rollout plan | AGENT: user | TYPE: plan
         """
 
-        actions = debate.parse_actions(text)
+        actions = parse_actions(text)
 
         self.assertEqual(
-            actions,
+            [(action.action, action.agent, action.mode) for action in actions],
             [
-                {"action": "Tighten parser", "agent": "codex", "type": "execute"},
-                {"action": "Review rollout plan", "agent": "user", "type": "plan"},
+                ("Tighten parser", "codex", ActionMode.EXECUTE),
+                ("Review rollout plan", "user", ActionMode.PLAN),
             ],
         )
 
 
 class ContextLoadingTests(unittest.TestCase):
     def test_load_context_filters_before_limiting_directory_entries(self):
+        loader = FilesystemContextLoader()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             for index in range(25):
@@ -64,37 +77,237 @@ class ContextLoadingTests(unittest.TestCase):
             target = root / "zz_target.py"
             target.write_text("print('included')\n", encoding="utf-8")
 
-            context = debate.load_context([str(root)])
+            context = loader.load([str(root)])
 
         self.assertIn("zz_target.py", context)
         self.assertIn("print('included')", context)
 
     def test_load_context_deduplicates_direct_files_and_directory_matches(self):
+        loader = FilesystemContextLoader()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             target = root / "app.py"
             target.write_text("print('once')\n", encoding="utf-8")
 
-            context = debate.load_context([str(target), str(root)])
+            context = loader.load([str(target), str(root)])
 
         self.assertEqual(context.count("print('once')"), 1)
 
 
 class PromptLoadingTests(unittest.TestCase):
     def test_load_prompts_raises_for_missing_explicit_file(self):
+        repository = TomlPromptRepository()
         missing = Path("/tmp/does-not-exist-prompts.toml")
         with self.assertRaises(FileNotFoundError):
-            debate.load_prompts(missing)
+            repository.load(missing)
+
+    def test_load_prompts_reads_packaged_defaults(self):
+        repository = TomlPromptRepository()
+        prompts = repository.load()
+
+        self.assertIn("You are {role}", prompts.debate)
+        self.assertIn("## Actions", prompts.final_summary)
 
 
 class ValidationTests(unittest.TestCase):
     def test_positive_int_rejects_zero(self):
         with self.assertRaises(argparse.ArgumentTypeError):
-            debate.positive_int("0")
+            positive_int("0")
 
     def test_normalize_action_choice_rejects_unknown_mode(self):
         with self.assertRaises(ValueError):
-            debate.normalize_action_choice("codex:shipit", "codex", "plan")
+            normalize_action_choice(
+                "codex:shipit",
+                default_agent="codex",
+                default_mode=ActionMode.PLAN,
+                allowed_agents={"claude", "codex", "gemini", "user"},
+            )
+
+
+class FakeAgentRegistry:
+    def __init__(self, responses):
+        self._responses = {name: list(values) for name, values in responses.items()}
+        self._metadata = {
+            "claude": AgentDefinition("claude", "Claude", "🟠", "red", "dots"),
+            "codex": AgentDefinition("codex", "Codex", "🔵", "blue", "dots"),
+            "gemini": AgentDefinition("gemini", "Gemini", "🟡", "yellow", "dots"),
+        }
+
+    def names(self):
+        return set(self._responses)
+
+    def has(self, name):
+        return name in self._responses
+
+    def get_metadata(self, name):
+        return self._metadata[name]
+
+    def get_client(self, name):
+        registry = self
+
+        class _Client:
+            def run(self, prompt, allow_tools=False):
+                return registry._responses[name].pop(0)
+
+        return _Client()
+
+
+class FakeRenderer:
+    def __init__(self):
+        self.status_messages = []
+        self.convergence_reached = 0
+
+    def print_agent(self, role, text, turn=None):
+        return None
+
+    def print_steel_man(self, role, steel_man_text):
+        return None
+
+    def print_status(self, msg):
+        self.status_messages.append(msg)
+
+    def print_header(self, msg):
+        return None
+
+    def ask_user(self, prompt_text, default=""):
+        return default
+
+    def print_turn_stats(self, turn):
+        return None
+
+    def print_convergence_meter(self, overlap_ratio):
+        return None
+
+    def print_round_comparison(self, claude_turn, codex_turn):
+        return None
+
+    def print_round_transition(self):
+        return None
+
+    def print_round_progress(self, current, total):
+        return None
+
+    def print_banner(self, topic, max_rounds, allow_tools, context_count):
+        return None
+
+    def print_convergence_reached(self):
+        self.convergence_reached += 1
+
+    def print_actions_table(self, actions):
+        return None
+
+    def render_preflight_results(self, results):
+        return None
+
+    class _Ctx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    def agent_spinner(self, role):
+        return self._Ctx()
+
+
+class FakePromptRepository:
+    def load(self, override_path=None):
+        return PromptTemplates(
+            debate=(
+                "Topic: {topic}\n{context_block}\n{history}\n{moderator_guidance}\n{user_input_block}\n"
+                "Role: {role}\nOpponent: {opponent}"
+            ),
+            moderator="Moderator round {round}\n{round_turns}\n{user_input_block}",
+            final_summary="Final summary for {topic}\n## Actions",
+            action_execution="Action {action} in {mode}",
+        )
+
+
+class FakeContextLoader:
+    def load(self, paths, status_callback=None):
+        return "(no context files)"
+
+
+class DebateServiceTests(unittest.TestCase):
+    def test_service_stops_early_on_convergence(self):
+        responses = {
+            "claude": [
+                "STEEL MAN:\nN/A\n\nCONVERGENCE:\n- shared approach\n\nDIVERGENCE:\n- more speed\n\nCONFIDENCE: 0.9",
+            ],
+            "codex": [
+                "STEEL MAN:\nN/A\n\nCONVERGENCE:\n- shared approach\n\nDIVERGENCE:\n- more safety\n\nCONFIDENCE: 0.95",
+            ],
+            "gemini": [
+                "## Summary\nLooks aligned.\n\n## Focus for Next Round\n- Claude should: none\n- Codex should: none",
+                "Final summary\n## Actions",
+            ],
+        }
+        service = DebateService(
+            prompt_repository=FakePromptRepository(),
+            context_loader=FakeContextLoader(),
+            renderer=FakeRenderer(),
+            agent_registry=FakeAgentRegistry(responses),
+        )
+
+        result = service.run(DebateConfig(topic="test topic", max_rounds=3))
+
+        self.assertEqual(result.completed_rounds, 1)
+        self.assertEqual(len(result.turns), 2)
+        self.assertEqual(len(result.moderations), 1)
+        self.assertEqual(result.actions, [])
+
+
+class ReportWriterTests(unittest.TestCase):
+    def test_writer_emits_both_files_for_extensionless_output(self):
+        registry = FakeAgentRegistry({"claude": [], "codex": [], "gemini": []})
+        writer = FileReportWriter(registry)
+        service_result = DebateService(
+            prompt_repository=FakePromptRepository(),
+            context_loader=FakeContextLoader(),
+            renderer=FakeRenderer(),
+            agent_registry=FakeAgentRegistry(
+                {
+                    "claude": ["STEEL MAN:\nN/A\n\nCONVERGENCE:\n- one\n\nDIVERGENCE:\n- two\n\nCONFIDENCE: 0.5"],
+                    "codex": ["STEEL MAN:\nN/A\n\nCONVERGENCE:\n- one\n\nDIVERGENCE:\n- two\n\nCONFIDENCE: 0.5"],
+                    "gemini": ["## Summary\nx\n\n## Focus for Next Round\n- Claude should: x", "Final summary\n## Actions"],
+                }
+            ),
+        ).run(DebateConfig(topic="topic", max_rounds=1))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            written = writer.write(service_result, Path(tmp) / "debate")
+
+        self.assertEqual({path.suffix for path in written}, {".json", ".md"})
+
+
+class PreflightTests(unittest.TestCase):
+    @mock.patch("subprocess.run")
+    def test_preflight_runs_packaged_prompts_check(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+        service = PreflightService(TomlPromptRepository(), FakeAgentRegistry({"claude": ["READY"], "codex": ["READY"], "gemini": ["READY"]}))
+
+        results = service.run()
+
+        self.assertTrue(any("Packaged prompts" in result.detail for result in results))
+
+
+class AgentClientTests(unittest.TestCase):
+    @mock.patch("subprocess.run")
+    def test_codex_tool_flag_precedes_stdin_marker(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+        client = CommandAgentClient(
+            name="codex",
+            command_prefix=["codex", "exec"],
+            tool_flags=["--full-auto"],
+            command_suffix=["-"],
+        )
+
+        client.run("prompt", allow_tools=True)
+
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["codex", "exec", "--full-auto", "-"],
+        )
 
 
 if __name__ == "__main__":

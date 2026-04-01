@@ -16,27 +16,49 @@ Each round, agents must **steel man** their opponent's strongest argument before
 - [Claude Code](https://github.com/anthropics/claude-code) (`claude`)
 - [Codex CLI](https://github.com/openai/codex) (`codex`)
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
-- Python 3.11+ (for `tomllib`; 3.9+ works with `pip install tomli`)
+- Python 3.9+
 
-Optional: `pip install rich` for animated panels, spinners, and confidence bars.
+Install the package in editable mode:
+
+```bash
+pip install -e .
+```
+
+The package metadata, runtime dependencies, and `debate-cli` console entrypoint are defined in `pyproject.toml`.
+`requirements.txt` is intentionally minimal and kept only as a local editable-install convenience wrapper.
+
+Optional rich UI:
+
+```bash
+pip install -e ".[rich]"
+```
 
 ### Verify setup
 
 ```bash
-python debate.py --test
+debate-cli --test
 ```
 
-Runs a preflight check: Python version, Rich, TOML support, prompt templates, CLI availability, and agent liveness (sends a test prompt to each agent).
+Runs a preflight check: Python version, Rich availability, packaged prompt templates, CLI availability, and agent liveness.
+
+## Project structure
+
+- `src/debate_cli/` contains the packaged application code
+- `src/debate_cli/resources/default_prompts.toml` contains the built-in prompt defaults
+- `pyproject.toml` defines dependencies and the `debate-cli` entrypoint
+- `debate.py` remains as a compatibility shim to the packaged CLI
 
 ## Usage
 
 ```bash
-python debate.py "Should we use microservices or monolith?"
+debate-cli "Should we use microservices or monolith?"
 
-python debate.py "Review this codebase" --context ./src --tools --rounds 4
+debate-cli "Review this codebase" --context ./src --tools --rounds 4
 
-python debate.py "Improve error handling" --context ./src/api -o debate.json
+debate-cli "Improve error handling" --context ./src/api -o debate.json
 ```
+
+`python debate.py ...` still works as a compatibility shim.
 
 | Flag | Description |
 |------|-------------|
@@ -44,7 +66,7 @@ python debate.py "Improve error handling" --context ./src/api -o debate.json
 | `--rounds N` | Max debate rounds (default: 3) |
 | `--tools` | Allow agents to read/write files and run commands |
 | `-o FILE` | Save debate log (`.json`, `.md`, or both if no extension) |
-| `--prompts FILE` | Custom prompts TOML file (default: `prompts.toml`) |
+| `--prompts FILE` | Custom prompts TOML file override |
 | `--test` | Run preflight checks on all agents and exit |
 
 ### Context paths
@@ -53,13 +75,13 @@ python debate.py "Improve error handling" --context ./src/api -o debate.json
 
 ```bash
 # Single file
-python debate.py "Review this" --context ./src/main.py
+debate-cli "Review this" --context ./src/main.py
 
 # Directory (recursively includes .py, .rs, .ts, .js, .md, .toml, .yaml, .json)
-python debate.py "Review this" --context ./src
+debate-cli "Review this" --context ./src
 
 # Mix of both
-python debate.py "Review this" --context ./src/main.py ./docs ./config.toml
+debate-cli "Review this" --context ./src/main.py ./docs ./config.toml
 ```
 
 ## During the debate
@@ -74,16 +96,17 @@ After each round you can type guidance to steer the next round, or press Enter t
 ### Output formats
 
 ```bash
-python debate.py "topic" -o debate.json   # JSON log only
-python debate.py "topic" -o debate.md     # Markdown report only
-python debate.py "topic" -o debate        # Both debate.json + debate.md
+debate-cli "topic" -o debate.json   # JSON log only
+debate-cli "topic" -o debate.md     # Markdown report only
+debate-cli "topic" -o debate        # Both debate.json + debate.md
 ```
 
 The markdown report includes full debate transcript with steel mans as blockquotes, confidence percentages, moderator summaries, and an actions table.
 
 ## Customizing prompts
 
-Edit `prompts.toml` to change agent behavior. Four sections:
+The built-in defaults now live in the package at `src/debate_cli/resources/default_prompts.toml`.
+Use `--prompts custom.toml` to override them. Four sections:
 
 | Section | Controls |
 |---------|----------|
@@ -92,4 +115,4 @@ Edit `prompts.toml` to change agent behavior. Four sections:
 | `[final_summary]` | Final summary and action list generation |
 | `[action_execution]` | Prompt for executing individual actions |
 
-Each has a `template` key with `{placeholder}` variables. Missing sections fall back to built-in defaults. Use `--prompts custom.toml` to load a different file.
+Each has a `template` key with `{placeholder}` variables. Missing sections fall back to the packaged defaults.
