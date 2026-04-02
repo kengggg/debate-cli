@@ -54,7 +54,7 @@ class FileReportWriter(ReportWriter):
                 md_path.write_text(generate_markdown_report(result, icons), encoding="utf-8")
                 return [md_path]
 
-        # No extension → write json + md + pdf (if weasyprint available)
+        # No extension → write json + md + html/pdf when optional deps are available
         created: list[Path] = []
 
         json_path = output_path.with_suffix(".json")
@@ -67,6 +67,14 @@ class FileReportWriter(ReportWriter):
         md_path = output_path.with_suffix(".md")
         md_path.write_text(generate_markdown_report(result, icons), encoding="utf-8")
         created.append(md_path)
+
+        try:
+            from debate_cli.infrastructure.pdf_report import render_html_report
+            html_path = output_path.with_suffix(".html")
+            html_path.write_text(render_html_report(result, icons), encoding="utf-8")
+            created.append(html_path)
+        except (ImportError, OSError):
+            pass  # jinja2 not available — skip HTML
 
         try:
             from debate_cli.infrastructure.pdf_report import render_pdf_report

@@ -321,44 +321,29 @@ class DebateService:
         self._renderer.print_agent("gemini", final_raw)
         result.actions = parse_actions(final_raw)
 
-        if result.actions:
+        content_actions = [a for a in result.actions if a.mode != ActionMode.EXPORT]
+        export_actions = [a for a in result.actions if a.mode == ActionMode.EXPORT]
+
+        if content_actions:
             # ── Phase 1: Content actions (everything except export) ──
-            content_actions = [a for a in result.actions if a.mode != ActionMode.EXPORT]
-            export_actions = [a for a in result.actions if a.mode == ActionMode.EXPORT]
+            self._renderer.print_actions_table(content_actions)
+            self._renderer.print_status(
+                "For each action: (e)xecute, (p)lan, (c)ontinue, (s)kip, or reassign"
+            )
+            self._renderer.print_status(
+                "Format: press Enter for defaults, or type e/p/c/s or agent:e/agent:p\n"
+            )
 
-            if content_actions:
-                self._renderer.print_actions_table(content_actions)
-                self._renderer.print_status(
-                    "For each action: (e)xecute, (p)lan, (c)ontinue, (s)kip, or reassign"
+            for index, action in enumerate(content_actions, start=1):
+                ar = self._prompt_and_execute_action(
+                    index, action, config, result, prompts, context_block, final_raw,
                 )
-                self._renderer.print_status(
-                    "Format: press Enter for defaults, or type e/p/c/s or agent:e/agent:p\n"
-                )
-
-                for index, action in enumerate(content_actions, start=1):
-                    ar = self._prompt_and_execute_action(
-                        index, action, config, result, prompts, context_block, final_raw,
-                    )
-                    result.action_results.append(ar)
-
-            # ── Phase 2: Export (runs last, includes action results) ──
-            has_export = bool(export_actions)
-            if has_export or not config.output:
-                self._renderer.print_header("💾 Export")
-                export_choice = self._renderer.ask_user(
-                    "Export report? (includes debate + action results)\n"
-                    "  Enter path (e.g., report.pdf), or (s)kip:",
-                    default=str(config.output) if config.output else "debate-report",
-                )
-                if export_choice.strip().lower() not in ("s", "skip", ""):
-                    self._safe_export(result, Path(export_choice.strip()))
-                elif export_choice.strip().lower() not in ("s", "skip"):
-                    default_path = config.output or Path("debate-report")
-                    self._safe_export(result, default_path)
-                else:
-                    self._renderer.print_status("  ⏭ Export skipped")
-        else:
+                result.action_results.append(ar)
+        elif not result.actions:
             self._renderer.print_status("  ℹ️  No structured actions parsed - review the summary above.")
+
+        # ── Phase 2: Export (runs last, includes action results) ──
+        self._handle_export_phase(result, config, export_requested=bool(export_actions))
 
         return result
 
@@ -480,6 +465,34 @@ class DebateService:
         except Exception as exc:
             self._renderer.print_status(f"  ⚠️  Export failed: {exc}")
             self._renderer.print_status("  ℹ️  Your debate data is preserved in the session.")
+
+    def _handle_export_phase(
+        self,
+        result: DebateResult,
+        config: DebateConfig,
+        export_requested: bool,
+    ) -> None:
+        """Offer or perform export once, after all other actions finish."""
+        self._renderer.print_header("💾 Export")
+
+        if config.output:
+            self._safe_export(result, config.output)
+            return
+
+        if export_requested:
+            self._renderer.print_status("  ℹ️  Moderator recommended exporting this debate.")
+
+        export_choice = self._renderer.ask_user(
+            "Export report? (includes debate + action results)\n"
+            "  Enter path (e.g., report.pdf), or (s)kip:",
+            default="debate-report",
+        )
+        if export_choice.strip().lower() in ("s", "skip"):
+            self._renderer.print_status("  ⏭ Export skipped")
+            return
+
+        chosen_path = Path(export_choice.strip()) if export_choice.strip() else Path("debate-report")
+        self._safe_export(result, chosen_path)
 
     def _do_export(self, result: DebateResult, output_path: Path) -> None:
         """Export the report including action results."""

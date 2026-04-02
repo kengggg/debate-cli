@@ -69,6 +69,18 @@ class ParseStructuredTests(unittest.TestCase):
             ],
         )
 
+    def test_parse_actions_ignores_unknown_action_types(self):
+        text = """
+        ACTION 1: Broken mode | AGENT: codex | TYPE: shipit
+        ACTION 2: Valid plan | AGENT: user | TYPE: plan
+        """
+
+        actions = parse_actions(text)
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].action, "Valid plan")
+        self.assertEqual(actions[0].mode, ActionMode.PLAN)
+
 
 class ContextLoadingTests(unittest.TestCase):
     def test_load_context_filters_before_limiting_directory_entries(self):
@@ -272,6 +284,15 @@ class DebateServiceTests(unittest.TestCase):
         self.assertEqual(result.actions, [])
 
 
+class FakeReportWriter:
+    def __init__(self):
+        self.calls = []
+
+    def write(self, result, output_path):
+        self.calls.append((result, output_path))
+        return [output_path]
+
+
 class ReportWriterTests(unittest.TestCase):
     def test_writer_emits_both_files_for_extensionless_output(self):
         registry = FakeAgentRegistry({"claude": [], "codex": [], "gemini": []})
@@ -294,6 +315,27 @@ class ReportWriterTests(unittest.TestCase):
 
         suffixes = {path.suffix for path in written}
         self.assertTrue({".json", ".md"}.issubset(suffixes))
+
+    @mock.patch("debate_cli.infrastructure.pdf_report.render_pdf_report")
+    @mock.patch("debate_cli.infrastructure.pdf_report.render_html_report")
+    def test_writer_emits_html_for_extensionless_output(self, mock_render_html, mock_render_pdf):
+        registry = FakeAgentRegistry({"claude": [], "codex": [], "gemini": []})
+        writer = FileReportWriter(registry)
+        result = DebateResult(config=DebateConfig(topic="topic"))
+
+        mock_render_html.return_value = "<html>report</html>"
+
+        def _write_pdf(_result, _icons, output_path):
+            output_path.write_bytes(b"%PDF-1.4")
+            return output_path
+
+        mock_render_pdf.side_effect = _write_pdf
+
+        with tempfile.TemporaryDirectory() as tmp:
+            written = writer.write(result, Path(tmp) / "debate")
+
+        suffixes = {path.suffix for path in written}
+        self.assertEqual(suffixes, {".json", ".md", ".html", ".pdf"})
 
 
 class PreflightTests(unittest.TestCase):
@@ -324,6 +366,25 @@ class AgentClientTests(unittest.TestCase):
             mock_run.call_args.args[0],
             ["codex", "exec", "--full-auto", "-"],
         )
+
+    @mock.patch("subprocess.run")
+    def test_gemini_prompt_is_passed_via_argument_not_stdin(self, mock_run):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+        client = CommandAgentClient(
+            name="gemini",
+            command_prefix=["gemini"],
+            tool_flags=["-y"],
+            prompt_argument=["-p"],
+            prompt_via_stdin=False,
+        )
+
+        client.run("prompt text", allow_tools=True)
+
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["gemini", "-y", "-p", "prompt text"],
+        )
+        self.assertIsNone(mock_run.call_args.kwargs["input"])
 
 
 class ActionModeTests(unittest.TestCase):
@@ -444,6 +505,56 @@ class AutopilotTests(unittest.TestCase):
         steering_calls = [c for c in renderer.ask_user_calls if "Your thoughts" in c]
         self.assertEqual(len(steering_calls), 0)
         self.assertEqual(result.completed_rounds, 2)
+
+
+class ExportFlowTests(unittest.TestCase):
+    def test_service_exports_once_even_without_structured_actions_when_output_is_configured(self):
+        responses = {
+            "claude": ["Opening.\n\nCONFIDENCE: 0.5"],
+            "codex": ["Opening.\n\nCONFIDENCE: 0.5"],
+            "gemini": [
+                "## Summary\nRound 1.\n\n## Focus for Next Round\n- Claude should: x",
+                "Final summary without parseable action lines",
+            ],
+        }
+        renderer = FakeRenderer()
+        report_writer = FakeReportWriter()
+        service = DebateService(
+            prompt_repository=FakePromptRepository(),
+            context_loader=FakeContextLoader(),
+            renderer=renderer,
+            agent_registry=FakeAgentRegistry(responses),
+            report_writer=report_writer,
+        )
+
+        output_path = Path("report.md")
+        result = service.run(DebateConfig(topic="test", max_rounds=1, output=output_path))
+
+        self.assertEqual(result.actions, [])
+        self.assertEqual(len(report_writer.calls), 1)
+        self.assertEqual(report_writer.calls[0][1], output_path)
+        self.assertEqual(renderer.ask_user_calls, [])
+
+    def test_service_still_offers_export_when_actions_are_unparseable(self):
+        responses = {
+            "claude": ["Opening.\n\nCONFIDENCE: 0.5"],
+            "codex": ["Opening.\n\nCONFIDENCE: 0.5"],
+            "gemini": [
+                "## Summary\nRound 1.\n\n## Focus for Next Round\n- Claude should: x",
+                "## Actions\nACTION 1: Broken | AGENT: codex | TYPE: shipit",
+            ],
+        }
+        renderer = FakeRenderer()
+        service = DebateService(
+            prompt_repository=FakePromptRepository(),
+            context_loader=FakeContextLoader(),
+            renderer=renderer,
+            agent_registry=FakeAgentRegistry(responses),
+        )
+
+        service.run(DebateConfig(topic="test", max_rounds=1))
+
+        self.assertTrue(any("Export report?" in call for call in renderer.ask_user_calls))
 
 
 class PreflightExportLibsTests(unittest.TestCase):

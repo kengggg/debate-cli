@@ -16,14 +16,20 @@ class CommandAgentClient(AgentClient):
     name: str
     command_prefix: list[str]
     tool_flags: list[str]
+    prompt_argument: list[str] = field(default_factory=list)
+    prompt_via_stdin: bool = True
     command_suffix: list[str] = field(default_factory=list)
 
     def run(self, prompt: str, allow_tools: bool = False) -> str:
         cmd = list(self.command_prefix)
         if allow_tools:
             cmd.extend(self.tool_flags)
+        if self.prompt_argument:
+            cmd.extend(self.prompt_argument)
+            cmd.append(prompt)
         cmd.extend(self.command_suffix)
-        result = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300)
+        stdin_input = prompt if self.prompt_via_stdin else None
+        result = subprocess.run(cmd, input=stdin_input, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             raise RuntimeError(f"{self.name} CLI error: {result.stderr[:500]}")
         if self.name == "gemini" and not result.stdout.strip() and result.stderr.strip():
@@ -107,8 +113,10 @@ def build_builtin_agent_registry() -> BuiltinAgentRegistry:
                 ),
                 client=CommandAgentClient(
                     name="gemini",
-                    command_prefix=["gemini", "-p", ""],
+                    command_prefix=["gemini"],
                     tool_flags=["-y"],
+                    prompt_argument=["-p"],
+                    prompt_via_stdin=False,
                 ),
             ),
         ]

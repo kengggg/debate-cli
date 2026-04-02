@@ -53,10 +53,7 @@ def run_debate(
         output=Path(output) if output else None,
         prompts_path=prompts_path,
     )
-    result = app.debate_service.run(config)
-    if config.output:
-        app.report_writer.write(result, config.output)
-    return result.turns
+    return app.debate_service.run(config).turns
 
 
 __all__ = [

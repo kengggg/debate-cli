@@ -82,7 +82,9 @@ def parse_actions(text: str) -> list[DebateAction]:
             continue
 
         raw_mode = match.group(3).strip().lower()
-        mode = MODE_ALIASES.get(raw_mode, ActionMode.PLAN)
+        mode = MODE_ALIASES.get(raw_mode)
+        if mode is None:
+            continue
         actions.append(
             DebateAction(
                 action=match.group(1).strip(),

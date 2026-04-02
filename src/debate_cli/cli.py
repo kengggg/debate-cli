@@ -70,7 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max debate rounds (default: 3)",
     )
     parser.add_argument("--tools", action="store_true", help="Allow agents to use tools (file I/O, shell)")
-    parser.add_argument("--output", "-o", help="Save debate log (.json, .md, or both if no extension)")
+    parser.add_argument(
+        "--output",
+        "-o",
+        help="Save report (.json, .md, .html, .pdf, or all available formats if no extension)",
+    )
     parser.add_argument("--prompts", type=Path, help="Custom prompts TOML file")
     parser.add_argument("--autopilot", action="store_true",
                         help="Run without user interaction (agents debate autonomously)")
@@ -104,17 +108,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        result = app.debate_service.run(config)
+        app.debate_service.run(config)
     except KeyboardInterrupt:
         app.renderer.print_status("\n\n⛔ Debate interrupted by user")
         return 1
-
-    if config.output:
-        written_paths = app.report_writer.write(result, config.output)
-        if len(written_paths) == 1:
-            app.renderer.print_status(f"\n💾 Saved: {written_paths[0]}")
-        else:
-            joined = " + ".join(str(path) for path in written_paths)
-            app.renderer.print_status(f"\n💾 Saved: {joined}")
 
     return 0
