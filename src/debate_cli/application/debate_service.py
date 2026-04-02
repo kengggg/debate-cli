@@ -472,27 +472,12 @@ class DebateService:
         config: DebateConfig,
         export_requested: bool,
     ) -> None:
-        """Offer or perform export once, after all other actions finish."""
+        """Export the report. Output path is always set (defaults to ./outputs/)."""
         self._renderer.print_header("💾 Export")
-
         if config.output:
             self._safe_export(result, config.output)
-            return
-
-        if export_requested:
-            self._renderer.print_status("  ℹ️  Moderator recommended exporting this debate.")
-
-        export_choice = self._renderer.ask_user(
-            "Export report? (includes debate + action results)\n"
-            "  Enter path (e.g., report.pdf), or (s)kip:",
-            default="debate-report",
-        )
-        if export_choice.strip().lower() in ("s", "skip"):
-            self._renderer.print_status("  ⏭ Export skipped")
-            return
-
-        chosen_path = Path(export_choice.strip()) if export_choice.strip() else Path("debate-report")
-        self._safe_export(result, chosen_path)
+        else:
+            self._renderer.print_status("  ℹ️  No output path configured.")
 
     def _do_export(self, result: DebateResult, output_path: Path) -> None:
         """Export the report including action results."""

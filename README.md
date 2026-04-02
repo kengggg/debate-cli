@@ -124,18 +124,29 @@ Gemini produces a synthesis with consensus points, unresolved disagreements, and
 - `codex:p` — reassign to Codex and plan
 - Enter — accept the default
 
-**Phase 2 — Export** is always offered last, after all content actions complete. This ensures the exported report includes action results (plans, outputs).
+**Phase 2 — Export** runs automatically after all content actions. Reports are saved to `./outputs/` by default.
 
 Without `--tools`, agents cannot write files or run commands — even for execute-type actions.
 
-## Output formats
+## Output
+
+Every debate auto-saves to a timestamped folder in `./outputs/`:
+
+```
+./outputs/
+  2026-04-02T10-13_microservices-vs-monolith/
+    report.json
+    report.md
+    report.html   (if jinja2 installed)
+    report.pdf    (if weasyprint + pango installed)
+```
+
+Override with `-o`:
 
 ```bash
-debate-cli "topic" -o report.json    # JSON log
-debate-cli "topic" -o report.md      # Markdown report (executive summary + transcript)
-debate-cli "topic" -o report.html    # Styled HTML with confidence bars and charts
-debate-cli "topic" -o report.pdf     # PDF with professional typography and visuals
-debate-cli "topic" -o report         # All formats at once
+debate-cli "topic" -o custom.json    # Single format to specific file
+debate-cli "topic" -o custom.pdf     # PDF only
+debate-cli "topic" -o ./my-reports/debate  # All formats into custom directory
 ```
 
 Reports include an executive summary (consensus, disagreements, actions table), the full debate transcript with steel mans and convergence meters, and **action results** — any plans or outputs generated during the action phase.

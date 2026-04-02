@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
 import textwrap
+from datetime import datetime
 from pathlib import Path
 
 from debate_cli.application.parsing import positive_int
@@ -47,6 +49,13 @@ def _ensure_homebrew_lib_path() -> None:
     os.environ[env_key] = f"{lib_dir}{os.pathsep}{current}" if current else lib_dir
 
 
+def _default_output_dir(topic: str) -> Path:
+    """Generate ./outputs/{timestamp}_{topic-slug}/ path."""
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M")
+    slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:50]
+    return Path("outputs") / f"{timestamp}_{slug}"
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser."""
     parser = argparse.ArgumentParser(
@@ -73,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         "-o",
-        help="Save report (.json, .md, .html, .pdf, or all available formats if no extension)",
+        help="Output path (default: ./outputs/{timestamp}_{topic}/). Use .json/.md/.html/.pdf extension for single format",
     )
     parser.add_argument("--prompts", type=Path, help="Custom prompts TOML file")
     parser.add_argument("--autopilot", action="store_true",
@@ -97,13 +106,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.topic:
         parser.error("topic is required (use --test to check system readiness)")
 
+    output = Path(args.output) if args.output else _default_output_dir(args.topic)
+
     config = DebateConfig(
         topic=args.topic,
         context_paths=list(args.context),
         max_rounds=args.rounds,
         allow_tools=args.tools,
         autopilot=args.autopilot,
-        output=Path(args.output) if args.output else None,
+        output=output,
         prompts_path=args.prompts,
     )
 

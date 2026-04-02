@@ -535,7 +535,7 @@ class ExportFlowTests(unittest.TestCase):
         self.assertEqual(report_writer.calls[0][1], output_path)
         self.assertEqual(renderer.ask_user_calls, [])
 
-    def test_service_still_offers_export_when_actions_are_unparseable(self):
+    def test_service_auto_exports_when_output_path_is_set(self):
         responses = {
             "claude": ["Opening.\n\nCONFIDENCE: 0.5"],
             "codex": ["Opening.\n\nCONFIDENCE: 0.5"],
@@ -545,16 +545,21 @@ class ExportFlowTests(unittest.TestCase):
             ],
         }
         renderer = FakeRenderer()
+        report_writer = FakeReportWriter()
         service = DebateService(
             prompt_repository=FakePromptRepository(),
             context_loader=FakeContextLoader(),
             renderer=renderer,
             agent_registry=FakeAgentRegistry(responses),
+            report_writer=report_writer,
         )
 
-        service.run(DebateConfig(topic="test", max_rounds=1))
+        output_path = Path("outputs/test")
+        service.run(DebateConfig(topic="test", max_rounds=1, output=output_path))
 
-        self.assertTrue(any("Export report?" in call for call in renderer.ask_user_calls))
+        # Auto-export happens without asking
+        self.assertEqual(len(report_writer.calls), 1)
+        self.assertEqual(report_writer.calls[0][1], output_path)
 
 
 class PreflightExportLibsTests(unittest.TestCase):

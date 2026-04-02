@@ -12,6 +12,7 @@ __pycache__/
 debate-log.json
 report.*
 report-*.pdf
+outputs/
 
 data/
 debate-system.html

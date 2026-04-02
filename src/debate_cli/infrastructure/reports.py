@@ -23,16 +23,17 @@ class FileReportWriter(ReportWriter):
         }
 
     def write(self, result: DebateResult, output_path: Path) -> list[Path]:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
         icons = self._icons()
-
         suffix = output_path.suffix.lower()
 
+        # ── Single-format output (explicit extension) ──
         if suffix == ".md":
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(generate_markdown_report(result, icons), encoding="utf-8")
             return [output_path]
 
         if suffix == ".json":
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(
                 json.dumps(serialize_result(result), indent=2, ensure_ascii=False),
                 encoding="utf-8",
@@ -40,48 +41,56 @@ class FileReportWriter(ReportWriter):
             return [output_path]
 
         if suffix == ".html":
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             from debate_cli.infrastructure.pdf_report import render_html_report
             output_path.write_text(render_html_report(result, icons), encoding="utf-8")
             return [output_path]
 
         if suffix == ".pdf":
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 from debate_cli.infrastructure.pdf_report import render_pdf_report
                 return [render_pdf_report(result, icons, output_path)]
-            except (ImportError, OSError) as exc:
-                # Fall back to markdown if PDF unavailable
+            except (ImportError, OSError):
                 md_path = output_path.with_suffix(".md")
                 md_path.write_text(generate_markdown_report(result, icons), encoding="utf-8")
                 return [md_path]
 
-        # No extension → write json + md + html/pdf when optional deps are available
+        # ── Directory output (no extension) — write all formats as report.* ──
+        output_path.mkdir(parents=True, exist_ok=True)
+        return self._write_all_formats(result, icons, output_path)
+
+    def _write_all_formats(
+        self, result: DebateResult, icons: dict[str, str], directory: Path,
+    ) -> list[Path]:
+        """Write all available formats into a directory."""
         created: list[Path] = []
 
-        json_path = output_path.with_suffix(".json")
+        json_path = directory / "report.json"
         json_path.write_text(
             json.dumps(serialize_result(result), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
         created.append(json_path)
 
-        md_path = output_path.with_suffix(".md")
+        md_path = directory / "report.md"
         md_path.write_text(generate_markdown_report(result, icons), encoding="utf-8")
         created.append(md_path)
 
         try:
             from debate_cli.infrastructure.pdf_report import render_html_report
-            html_path = output_path.with_suffix(".html")
+            html_path = directory / "report.html"
             html_path.write_text(render_html_report(result, icons), encoding="utf-8")
             created.append(html_path)
         except (ImportError, OSError):
-            pass  # jinja2 not available — skip HTML
+            pass
 
         try:
             from debate_cli.infrastructure.pdf_report import render_pdf_report
-            pdf_path = output_path.with_suffix(".pdf")
+            pdf_path = directory / "report.pdf"
             render_pdf_report(result, icons, pdf_path)
             created.append(pdf_path)
         except (ImportError, OSError):
-            pass  # weasyprint/pango not available — skip PDF
+            pass
 
         return created
