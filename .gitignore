@@ -18,3 +18,5 @@ data/
 debate-system.html
 
 share/
+
+.DS_Store
