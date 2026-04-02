@@ -123,6 +123,26 @@ class DebateAction:
     mode: ActionMode
 
 
+class ActionStatus(StrEnum):
+    """Outcome status for an executed action."""
+
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+@dataclass
+class ActionResult:
+    """Outcome of an action execution."""
+
+    action: DebateAction
+    status: ActionStatus
+    agent_used: str = ""
+    mode_used: ActionMode = ActionMode.PLAN
+    output: str = ""
+    error: str = ""
+
+
 @dataclass(frozen=True)
 class DebateConfig:
     """Runtime configuration for a debate session."""
@@ -146,6 +166,7 @@ class DebateResult:
     user_inputs: list[UserInput] = field(default_factory=list)
     final_summary: str = ""
     actions: list[DebateAction] = field(default_factory=list)
+    action_results: list[ActionResult] = field(default_factory=list)
 
     @property
     def completed_rounds(self) -> int:
@@ -181,5 +202,16 @@ def result_to_dict(result: DebateResult) -> dict[str, Any]:
                 "type": action.mode.value,
             }
             for action in result.actions
+        ],
+        "action_results": [
+            {
+                "action": ar.action.action,
+                "status": ar.status.value,
+                "agent_used": ar.agent_used,
+                "mode_used": ar.mode_used.value,
+                "output": ar.output,
+                "error": ar.error,
+            }
+            for ar in result.action_results
         ],
     }

@@ -14,7 +14,10 @@ from debate_cli.application.debate_service import DebateService
 from debate_cli.application.parsing import normalize_action_choice, parse_actions, parse_structured
 from debate_cli.application.preflight import PreflightService
 from debate_cli.cli import positive_int
-from debate_cli.domain.models import ActionMode, AgentDefinition, DebateConfig, PromptTemplates
+from debate_cli.domain.models import (
+    ActionMode, ActionResult, ActionStatus, AgentDefinition,
+    DebateAction, DebateConfig, DebateResult, PromptTemplates, result_to_dict,
+)
 from debate_cli.infrastructure.context import FilesystemContextLoader
 from debate_cli.infrastructure.agents import CommandAgentClient
 from debate_cli.infrastructure.prompts import TomlPromptRepository
@@ -156,6 +159,7 @@ class FakeRenderer:
     def __init__(self):
         self.status_messages = []
         self.convergence_reached = 0
+        self.ask_user_calls = []
 
     def print_agent(self, role, text, turn=None):
         return None
@@ -170,6 +174,7 @@ class FakeRenderer:
         return None
 
     def ask_user(self, prompt_text, default=""):
+        self.ask_user_calls.append(prompt_text)
         return default
 
     def print_turn_stats(self, turn):
@@ -319,6 +324,142 @@ class AgentClientTests(unittest.TestCase):
             mock_run.call_args.args[0],
             ["codex", "exec", "--full-auto", "-"],
         )
+
+
+class ActionModeTests(unittest.TestCase):
+    def test_normalize_accepts_continue_mode(self):
+        sel = normalize_action_choice(
+            "c", default_agent="system", default_mode=ActionMode.CONTINUE,
+            allowed_agents={"claude", "codex", "gemini", "user", "system"},
+        )
+        self.assertEqual(sel.mode, ActionMode.CONTINUE)
+
+    def test_normalize_accepts_export_mode(self):
+        sel = normalize_action_choice(
+            "x", default_agent="system", default_mode=ActionMode.EXPORT,
+            allowed_agents={"claude", "codex", "gemini", "user", "system"},
+        )
+        self.assertEqual(sel.mode, ActionMode.EXPORT)
+
+    def test_parse_actions_handles_continue_and_export_types(self):
+        text = """
+        ACTION 1: Continue debating with focus on costs | AGENT: system | TYPE: continue
+        ACTION 2: Export report for team review | AGENT: system | TYPE: export
+        """
+        actions = parse_actions(text)
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0].mode, ActionMode.CONTINUE)
+        self.assertEqual(actions[0].agent, "system")
+        self.assertEqual(actions[1].mode, ActionMode.EXPORT)
+
+
+class ActionResultTests(unittest.TestCase):
+    def test_result_to_dict_includes_action_results(self):
+        action = DebateAction(action="Create plan", agent="claude", mode=ActionMode.PLAN)
+        results = [
+            ActionResult(
+                action=action, status=ActionStatus.COMPLETED,
+                agent_used="claude", mode_used=ActionMode.PLAN,
+                output="Here is the plan...",
+            ),
+            ActionResult(
+                action=DebateAction(action="User task", agent="user", mode=ActionMode.EXECUTE),
+                status=ActionStatus.SKIPPED,
+                agent_used="user",
+            ),
+            ActionResult(
+                action=DebateAction(action="Broken", agent="codex", mode=ActionMode.EXECUTE),
+                status=ActionStatus.FAILED,
+                agent_used="codex", mode_used=ActionMode.EXECUTE,
+                error="Timeout",
+            ),
+        ]
+        config = DebateConfig(topic="test")
+        debate_result = DebateResult(config=config, actions=[action], action_results=results)
+
+        serialized = result_to_dict(debate_result)
+
+        self.assertEqual(len(serialized["action_results"]), 3)
+        self.assertEqual(serialized["action_results"][0]["status"], "completed")
+        self.assertEqual(serialized["action_results"][0]["output"], "Here is the plan...")
+        self.assertEqual(serialized["action_results"][1]["status"], "skipped")
+        self.assertEqual(serialized["action_results"][2]["status"], "failed")
+        self.assertEqual(serialized["action_results"][2]["error"], "Timeout")
+
+
+class DebateServiceOpeningRoundTests(unittest.TestCase):
+    def test_opening_round_skips_convergence_check(self):
+        """Even with high confidence in round 1, convergence check is skipped."""
+        responses = {
+            "claude": ["Strong position.\n\nCONFIDENCE: 0.95"],
+            "codex": ["Strong position.\n\nCONFIDENCE: 0.95"],
+            "gemini": [
+                "## Summary\nBoth agree.\n\n## Focus for Next Round\n- Claude should: x",
+                "Final summary\n## Actions",
+            ],
+        }
+        service = DebateService(
+            prompt_repository=FakePromptRepository(),
+            context_loader=FakeContextLoader(),
+            renderer=FakeRenderer(),
+            agent_registry=FakeAgentRegistry(responses),
+        )
+
+        result = service.run(DebateConfig(topic="test", max_rounds=1))
+
+        # Should complete round 1 without early stop (convergence skipped for round 1)
+        self.assertEqual(result.completed_rounds, 1)
+        self.assertEqual(len(result.turns), 2)
+
+
+class AutopilotTests(unittest.TestCase):
+    def test_autopilot_skips_user_steering(self):
+        """With autopilot=True, ask_user should not be called during debate rounds."""
+        responses = {
+            "claude": [
+                "Opening.\n\nCONFIDENCE: 0.5",
+                "STEEL MAN:\nX\n\nCONVERGENCE:\n- a\n\nDIVERGENCE:\n- b\n\nCONFIDENCE: 0.9",
+            ],
+            "codex": [
+                "Opening.\n\nCONFIDENCE: 0.5",
+                "STEEL MAN:\nY\n\nCONVERGENCE:\n- a\n\nDIVERGENCE:\n- c\n\nCONFIDENCE: 0.9",
+            ],
+            "gemini": [
+                "## Summary\nRound 1.\n\n## Focus for Next Round\n- Claude should: x\n- Codex should: y",
+                "## Summary\nRound 2.\n\n## Focus for Next Round\n- Claude should: x",
+                "Final summary\n## Actions",
+            ],
+        }
+        renderer = FakeRenderer()
+        service = DebateService(
+            prompt_repository=FakePromptRepository(),
+            context_loader=FakeContextLoader(),
+            renderer=renderer,
+            agent_registry=FakeAgentRegistry(responses),
+        )
+
+        result = service.run(DebateConfig(topic="test", max_rounds=2, autopilot=True))
+
+        # ask_user should only be called for the export prompt (Phase 2), not for steering
+        steering_calls = [c for c in renderer.ask_user_calls if "Your thoughts" in c]
+        self.assertEqual(len(steering_calls), 0)
+        self.assertEqual(result.completed_rounds, 2)
+
+
+class PreflightExportLibsTests(unittest.TestCase):
+    def test_preflight_checks_export_libraries(self):
+        """Preflight should include checks for Jinja2, WeasyPrint, and Pango."""
+        service = PreflightService(
+            TomlPromptRepository(),
+            FakeAgentRegistry({"claude": ["READY"], "codex": ["READY"], "gemini": ["READY"]}),
+        )
+
+        checks = service.build_checks()
+        check_names = [c.name for c in checks]
+
+        self.assertIn("Jinja2", check_names)
+        self.assertIn("WeasyPrint", check_names)
+        self.assertIn("Pango (system)", check_names)
 
 
 if __name__ == "__main__":

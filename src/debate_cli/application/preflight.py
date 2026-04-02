@@ -34,6 +34,9 @@ class PreflightService:
             PreflightCheck("System", "Python version", self._check_python),
             PreflightCheck("System", "Rich library", self._check_rich),
             PreflightCheck("System", "Prompt templates", self._check_prompts),
+            PreflightCheck("Export Libraries", "Jinja2", self._check_jinja2),
+            PreflightCheck("Export Libraries", "WeasyPrint", self._check_weasyprint),
+            PreflightCheck("Export Libraries", "Pango (system)", self._check_pango),
             PreflightCheck("CLI Tools", "claude", self._check_cli("claude", ["claude", "--version"])),
             PreflightCheck("CLI Tools", "codex", self._check_cli("codex", ["codex", "--version"])),
             PreflightCheck("CLI Tools", "gemini", self._check_cli("gemini", ["gemini", "--version"])),
@@ -81,6 +84,41 @@ class PreflightService:
     def _check_prompts(self) -> tuple[bool, str]:
         prompts = self._prompt_repository.load()
         return True, f"Packaged prompts ({len(prompts.as_mapping())} templates)"
+
+    def _check_jinja2(self) -> tuple[bool, str]:
+        try:
+            from importlib.metadata import version as pkg_version
+            ver = pkg_version("jinja2")
+            return True, f"Jinja2 {ver} (HTML/PDF templates)"
+        except Exception:
+            return False, "Jinja2 not installed (pip install 'debate-cli[pdf]')"
+
+    def _check_weasyprint(self) -> tuple[bool, str]:
+        try:
+            from importlib.metadata import version as pkg_version
+            ver = pkg_version("weasyprint")
+            return True, f"WeasyPrint {ver} (PDF rendering)"
+        except Exception:
+            return False, "WeasyPrint not installed (pip install 'debate-cli[pdf]')"
+
+    def _check_pango(self) -> tuple[bool, str]:
+        try:
+            from weasyprint.text.ffi import pango  # noqa: F401
+            return True, "Pango available (PDF text layout)"
+        except ImportError:
+            return False, "WeasyPrint not installed - skipping Pango check"
+        except OSError:
+            # Pango may be installed but not on library path
+            hint = "brew install pango / apt install libpango1.0-dev"
+            if sys.platform == "darwin":
+                import shutil
+                if shutil.which("brew"):
+                    hint = (
+                        "Pango may be installed but not found by Python. "
+                        "The CLI auto-sets DYLD_FALLBACK_LIBRARY_PATH at startup; "
+                        "if this persists, try: export DYLD_FALLBACK_LIBRARY_PATH=$(brew --prefix)/lib"
+                    )
+            return False, hint
 
     def _check_cli(self, name: str, cmd: list[str]) -> Callable[[], tuple[bool, str]]:
         def _runner() -> tuple[bool, str]:

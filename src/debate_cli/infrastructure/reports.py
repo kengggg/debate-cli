@@ -45,8 +45,14 @@ class FileReportWriter(ReportWriter):
             return [output_path]
 
         if suffix == ".pdf":
-            from debate_cli.infrastructure.pdf_report import render_pdf_report
-            return [render_pdf_report(result, icons, output_path)]
+            try:
+                from debate_cli.infrastructure.pdf_report import render_pdf_report
+                return [render_pdf_report(result, icons, output_path)]
+            except (ImportError, OSError) as exc:
+                # Fall back to markdown if PDF unavailable
+                md_path = output_path.with_suffix(".md")
+                md_path.write_text(generate_markdown_report(result, icons), encoding="utf-8")
+                return [md_path]
 
         # No extension → write json + md + pdf (if weasyprint available)
         created: list[Path] = []
@@ -67,7 +73,7 @@ class FileReportWriter(ReportWriter):
             pdf_path = output_path.with_suffix(".pdf")
             render_pdf_report(result, icons, pdf_path)
             created.append(pdf_path)
-        except ImportError:
-            pass  # weasyprint not installed — skip PDF
+        except (ImportError, OSError):
+            pass  # weasyprint/pango not available — skip PDF
 
         return created

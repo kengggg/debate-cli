@@ -10,6 +10,8 @@ pyvenv.cfg
 __pycache__/
 
 debate-log.json
+report.*
+report-*.pdf
 
 data/
 debate-system.html

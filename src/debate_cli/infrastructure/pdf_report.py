@@ -19,11 +19,19 @@ def _confidence_class(value: float) -> str:
     return "low"
 
 
-def _simple_md_to_html(text: str) -> str:
-    """Minimal markdown-to-HTML for agent output (paragraphs only)."""
-    escaped = html.escape(text.strip())
-    paragraphs = escaped.split("\n\n")
-    return "\n".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs if p.strip())
+def _md_to_html(text: str) -> str:
+    """Convert markdown text to HTML for report rendering."""
+    try:
+        import markdown
+        return markdown.markdown(
+            text.strip(),
+            extensions=["tables", "fenced_code", "nl2br"],
+        )
+    except ImportError:
+        # Fallback: basic paragraph splitting
+        escaped = html.escape(text.strip())
+        paragraphs = escaped.split("\n\n")
+        return "\n".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs if p.strip())
 
 
 def _build_convergence_svg(
@@ -120,8 +128,8 @@ def _build_template_context(result: DebateResult, agent_icons: dict[str, str]) -
                 "opponent": "Codex" if t.agent == "claude" else "Claude",
                 "confidence_pct": pct,
                 "confidence_class": _confidence_class(t.confidence),
-                "steel_man": _simple_md_to_html(t.steel_man) if t.steel_man else "",
-                "position_html": _simple_md_to_html(t.position),
+                "steel_man": _md_to_html(t.steel_man) if t.steel_man else "",
+                "position_html": _md_to_html(t.position),
                 "convergence": t.convergence,
                 "divergence": t.divergence,
             })
@@ -134,7 +142,7 @@ def _build_template_context(result: DebateResult, agent_icons: dict[str, str]) -
             "number": rnd,
             "turns": turns_ctx,
             "moderation": mod.summary if mod else "",
-            "moderation_html": _simple_md_to_html(mod.summary) if mod else "",
+            "moderation_html": _md_to_html(mod.summary) if mod else "",
             "user_input": user.text if user and user.text else "",
             "overlap": overlap,
             "overlap_pct": overlap_pct,
@@ -159,14 +167,28 @@ def _build_template_context(result: DebateResult, agent_icons: dict[str, str]) -
             "mode": a.mode.value,
         })
 
+    # Action results
+    action_results_ctx = []
+    for ar in result.action_results:
+        action_results_ctx.append({
+            "action_desc": ar.action.action,
+            "agent_used": ar.agent_used,
+            "icon": agent_icons.get(ar.agent_used, "⚪"),
+            "mode": ar.mode_used.value,
+            "status": ar.status.value,
+            "output_html": _md_to_html(ar.output) if ar.output else "",
+            "error": ar.error,
+        })
+
     return {
         "topic": result.config.topic,
         "date": date.today().isoformat(),
         "completed_rounds": result.completed_rounds,
-        "final_summary_html": _simple_md_to_html(result.final_summary) if result.final_summary else "<em>No summary</em>",
+        "final_summary_html": _md_to_html(result.final_summary) if result.final_summary else "<em>No summary</em>",
         "consensus_points": sorted(consensus),
         "disagreement_points": sorted(disagreements),
         "actions": actions_ctx,
+        "action_results": action_results_ctx,
         "convergence_data": convergence_data,
         "convergence_svg": _build_convergence_svg(convergence_data),
         "rounds": rounds_ctx,
@@ -202,10 +224,12 @@ def render_pdf_report(
 
     try:
         from weasyprint import HTML
-    except ImportError:
+    except (ImportError, OSError) as exc:
         raise ImportError(
-            "PDF export requires weasyprint. Install with: pip install -e '.[pdf]'"
-        )
+            f"PDF export requires weasyprint + system libraries (pango). "
+            f"Install with: pip install -e '.[pdf]' and brew install pango. "
+            f"Original error: {exc}"
+        ) from exc
 
     HTML(string=html_content).write_pdf(str(output_path))
     return output_path

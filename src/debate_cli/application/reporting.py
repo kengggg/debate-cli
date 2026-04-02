@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from debate_cli.domain.models import DebateResult, DebateTurn, ModerationSummary, UserInput, result_to_dict
+from debate_cli.domain.models import ActionStatus, DebateResult, DebateTurn, ModerationSummary, UserInput, result_to_dict
 
 
 def format_history(
@@ -165,6 +165,34 @@ def generate_markdown_report(result: DebateResult, agent_icons: dict[str, str]) 
             lines.append("")
 
         lines.append("---\n")
+
+    # ── Action Results ──
+    if result.action_results:
+        lines.append("## Action Results\n")
+        status_icons = {
+            ActionStatus.COMPLETED: "✅",
+            ActionStatus.SKIPPED: "⏭",
+            ActionStatus.FAILED: "❌",
+        }
+        for i, ar in enumerate(result.action_results, 1):
+            icon = agent_icons.get(ar.agent_used, "⚪")
+            status_icon = status_icons.get(ar.status, "⚪")
+            lines.append(f"### Action {i}: {ar.action.action}\n")
+            lines.append(
+                f"**Agent:** {icon} {ar.agent_used} | "
+                f"**Mode:** {ar.mode_used.value} | "
+                f"**Status:** {status_icon} {ar.status.value}"
+            )
+            lines.append("")
+
+            if ar.output:
+                lines.append(ar.output.strip())
+                lines.append("")
+            if ar.error:
+                lines.append(f"**Error:** {ar.error}")
+                lines.append("")
+
+            lines.append("---\n")
 
     return "\n".join(lines)
 

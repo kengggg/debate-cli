@@ -35,13 +35,20 @@ pip install -e ".[pdf]"     # HTML/PDF report export (WeasyPrint + Jinja2)
 pip install -e ".[all]"     # Everything
 ```
 
+For PDF export, you also need the Pango system library:
+
+```bash
+brew install pango          # macOS
+apt install libpango1.0-dev # Linux
+```
+
 ### Verify setup
 
 ```bash
 debate-cli --test
 ```
 
-Runs preflight checks: Python, Rich, TOML support, prompt templates, CLI availability, and agent liveness.
+Checks: Python, Rich, export libraries (Jinja2, WeasyPrint, Pango), prompt templates, CLI tools, and agent liveness.
 
 ## Usage
 
@@ -79,13 +86,13 @@ Directories are filtered to common code/config extensions (.py, .rs, .ts, .js, .
 
 ### Autopilot mode
 
-Run the full debate hands-free — agents debate autonomously, actions auto-execute with defaults, and you get the report at the end:
+Let agents debate autonomously without steering — you only interact at the action phase:
 
 ```bash
 debate-cli "Should we rewrite in Rust?" --context ./src --rounds 4 --autopilot -o report
 ```
 
-This skips all user steering prompts and action selection. Combine with `-o` to get reports automatically.
+Autopilot skips user steering between rounds (agents follow moderator guidance on their own). The action phase at the end still prompts you — you always decide what to execute, plan, export, or skip.
 
 ## Debate flow
 
@@ -108,16 +115,18 @@ Gemini produces a synthesis with consensus points, unresolved disagreements, and
 - **Technical debates** get concrete actions (execute code, produce plans)
 - **Philosophical/strategic debates** get reflective actions (continue debating, export report)
 
-### Action assignment
+### Actions (two-phase)
 
-For each suggested action:
+**Phase 1 — Content actions** are presented first (execute, plan, continue). Agent outputs are captured for the report.
 
-- `e` / `p` / `c` / `x` / `s` — execute, plan, continue, export, or skip
+- `e` / `p` / `c` / `s` — execute, plan, continue, or skip
 - `claude:e` — reassign to Claude and execute
 - `codex:p` — reassign to Codex and plan
 - Enter — accept the default
 
-**Continue** suggests re-running with more rounds. **Export** generates a report on the spot (prompts for path if `-o` wasn't specified).
+**Phase 2 — Export** is always offered last, after all content actions complete. This ensures the exported report includes action results (plans, outputs).
+
+Without `--tools`, agents cannot write files or run commands — even for execute-type actions.
 
 ## Output formats
 
@@ -129,9 +138,9 @@ debate-cli "topic" -o report.pdf     # PDF with professional typography and visu
 debate-cli "topic" -o report         # All formats at once
 ```
 
-The markdown report includes an executive summary (consensus, disagreements, actions table) followed by the full debate transcript with steel mans, convergence meters, and moderator assessments.
+Reports include an executive summary (consensus, disagreements, actions table), the full debate transcript with steel mans and convergence meters, and **action results** — any plans or outputs generated during the action phase.
 
-The HTML/PDF report adds color-coded agent sections, confidence bars, a convergence trend chart (SVG), and page-aware layout with headers and footers. Requires `pip install -e ".[pdf]"`.
+The HTML/PDF report adds color-coded agent sections, confidence bars, convergence trend chart (SVG), status badges for action results, and page-aware layout. Requires `pip install -e ".[pdf]"` + pango.
 
 ## Project structure
 

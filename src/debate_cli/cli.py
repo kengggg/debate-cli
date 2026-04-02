@@ -3,12 +3,48 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 from debate_cli.application.parsing import positive_int
 from debate_cli.bootstrap import build_application
 from debate_cli.domain.models import DebateConfig
+
+
+def _ensure_homebrew_lib_path() -> None:
+    """On macOS, add Homebrew's lib directory to DYLD_FALLBACK_LIBRARY_PATH.
+
+    WeasyPrint needs pango/gobject shared libraries. Homebrew installs them
+    in a non-default location that Python's ctypes.util.find_library misses.
+    """
+    if sys.platform != "darwin":
+        return
+
+    env_key = "DYLD_FALLBACK_LIBRARY_PATH"
+    current = os.environ.get(env_key, "")
+
+    # Try to find Homebrew prefix
+    brew = shutil.which("brew")
+    if not brew:
+        return
+    try:
+        prefix = subprocess.run(
+            [brew, "--prefix"], capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except Exception:
+        return
+
+    lib_dir = os.path.join(prefix, "lib")
+    if not os.path.isdir(lib_dir):
+        return
+    if lib_dir in current.split(os.pathsep):
+        return
+
+    os.environ[env_key] = f"{lib_dir}{os.pathsep}{current}" if current else lib_dir
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
+    _ensure_homebrew_lib_path()
     parser = build_parser()
     args = parser.parse_args(argv)
     app = build_application()

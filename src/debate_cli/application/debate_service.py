@@ -16,7 +16,10 @@ from debate_cli.application.parsing import (
 from debate_cli.application.reporting import format_history
 from debate_cli.domain.models import (
     ActionMode,
+    ActionResult,
     ActionSelection,
+    ActionStatus,
+    DebateAction,
     DebateConfig,
     DebateResult,
     DebateTurn,
@@ -319,107 +322,122 @@ class DebateService:
         result.actions = parse_actions(final_raw)
 
         if result.actions:
-            self._renderer.print_actions_table(result.actions)
+            # ── Phase 1: Content actions (everything except export) ──
+            content_actions = [a for a in result.actions if a.mode != ActionMode.EXPORT]
+            export_actions = [a for a in result.actions if a.mode == ActionMode.EXPORT]
 
-            if config.autopilot:
-                self._renderer.print_status("  🤖 Autopilot — auto-accepting all action defaults\n")
-                for index, action in enumerate(result.actions, start=1):
-                    default_agent = action.agent if self._agent_registry.has(action.agent) else "user"
-                    selection = ActionSelection(agent=default_agent, mode=action.mode)
-                    self._execute_action(
-                        index, action, selection, config, result, prompts, context_block, final_raw,
-                    )
-            else:
+            if content_actions:
+                self._renderer.print_actions_table(content_actions)
                 self._renderer.print_status(
-                    "For each action: (e)xecute, (p)lan, (c)ontinue, e(x)port, (s)kip, or reassign"
+                    "For each action: (e)xecute, (p)lan, (c)ontinue, (s)kip, or reassign"
                 )
                 self._renderer.print_status(
-                    "Format: press Enter for defaults, or type e/p/c/x/s or agent:e/agent:p\n"
+                    "Format: press Enter for defaults, or type e/p/c/s or agent:e/agent:p\n"
                 )
-                for index, action in enumerate(result.actions, start=1):
-                    default_agent = action.agent if self._agent_registry.has(action.agent) else "user"
-                    default_mode = action.mode
-                    choice = self._renderer.ask_user(
-                        f"Action {index}: {action.action}\n  [{default_agent}:{default_mode.value}]",
-                        default=f"{default_agent}:{default_mode.value}",
-                    )
-                    try:
-                        selection = normalize_action_choice(
-                            choice,
-                            default_agent=default_agent,
-                            default_mode=default_mode,
-                            allowed_agents=self._agent_registry.names() | {"user"},
-                        )
-                    except ValueError as exc:
-                        self._renderer.print_status(
-                            f"  ⚠️  {exc}; falling back to {default_agent}:{default_mode.value}"
-                        )
-                        selection = ActionSelection(agent=default_agent, mode=default_mode)
 
-                    if selection is None:
-                        self._renderer.print_status(f"  ⏭ Skipping action {index}")
-                        continue
-                    self._execute_action(
-                        index, action, selection, config, result, prompts, context_block, final_raw,
+                for index, action in enumerate(content_actions, start=1):
+                    ar = self._prompt_and_execute_action(
+                        index, action, config, result, prompts, context_block, final_raw,
                     )
+                    result.action_results.append(ar)
+
+            # ── Phase 2: Export (runs last, includes action results) ──
+            has_export = bool(export_actions)
+            if has_export or not config.output:
+                self._renderer.print_header("💾 Export")
+                export_choice = self._renderer.ask_user(
+                    "Export report? (includes debate + action results)\n"
+                    "  Enter path (e.g., report.pdf), or (s)kip:",
+                    default=str(config.output) if config.output else "debate-report",
+                )
+                if export_choice.strip().lower() not in ("s", "skip", ""):
+                    self._safe_export(result, Path(export_choice.strip()))
+                elif export_choice.strip().lower() not in ("s", "skip"):
+                    default_path = config.output or Path("debate-report")
+                    self._safe_export(result, default_path)
+                else:
+                    self._renderer.print_status("  ⏭ Export skipped")
         else:
             self._renderer.print_status("  ℹ️  No structured actions parsed - review the summary above.")
 
         return result
 
+    def _prompt_and_execute_action(
+        self,
+        index: int,
+        action: DebateAction,
+        config: DebateConfig,
+        result: DebateResult,
+        prompts,
+        context_block: str,
+        final_raw: str,
+    ) -> ActionResult:
+        """Prompt user for action choice and execute. Returns ActionResult."""
+        default_agent = action.agent if (
+            self._agent_registry.has(action.agent) or action.agent == "system"
+        ) else "user"
+        default_mode = action.mode
+
+        choice = self._renderer.ask_user(
+            f"Action {index}: {action.action}\n  [{default_agent}:{default_mode.value}]",
+            default=f"{default_agent}:{default_mode.value}",
+        )
+        try:
+            selection = normalize_action_choice(
+                choice,
+                default_agent=default_agent,
+                default_mode=default_mode,
+                allowed_agents=self._agent_registry.names() | {"user", "system"},
+            )
+        except ValueError as exc:
+            self._renderer.print_status(
+                f"  ⚠️  {exc}; falling back to {default_agent}:{default_mode.value}"
+            )
+            selection = ActionSelection(agent=default_agent, mode=default_mode)
+
+        if selection is None:
+            self._renderer.print_status(f"  ⏭ Skipping action {index}")
+            return ActionResult(action=action, status=ActionStatus.SKIPPED)
+
+        return self._execute_action(
+            index, action, selection, config, result, prompts, context_block, final_raw,
+        )
+
     def _execute_action(
         self,
         index: int,
-        action,
+        action: DebateAction,
         selection: ActionSelection,
         config: DebateConfig,
         result: DebateResult,
         prompts,
         context_block: str,
         final_raw: str,
-    ) -> None:
-        """Execute a single action based on the selection."""
-        if selection.agent == "user":
-            self._renderer.print_status(
-                f"  📝 Action {index} assigned to you - skipping AI execution"
-            )
-            return
-
+    ) -> ActionResult:
+        """Execute a single action and return the result."""
+        # ── Meta-actions ──
         if selection.mode == ActionMode.CONTINUE:
             self._renderer.print_status(
                 "  💡 To continue this debate, re-run with more rounds:\n"
                 f'     debate-cli "{config.topic}" --rounds N'
             )
-            return
+            return ActionResult(
+                action=action, status=ActionStatus.COMPLETED,
+                agent_used="system", mode_used=ActionMode.CONTINUE,
+                output=f'Re-run with: debate-cli "{config.topic}" --rounds N',
+            )
 
-        if selection.mode == ActionMode.EXPORT:
-            if self._report_writer and config.output:
-                paths = self._report_writer.write(result, config.output)
-                self._renderer.print_status(
-                    f"  💾 Exported: {', '.join(str(p) for p in paths)}"
-                )
-            elif self._report_writer and not config.autopilot:
-                export_path = self._renderer.ask_user(
-                    "Export path (e.g., report.pdf, report.md):",
-                    default="debate-report",
-                )
-                if export_path:
-                    paths = self._report_writer.write(result, Path(export_path))
-                    self._renderer.print_status(
-                        f"  💾 Exported: {', '.join(str(p) for p in paths)}"
-                    )
-            elif self._report_writer:
-                # Autopilot + no output path — use default
-                paths = self._report_writer.write(result, Path("debate-report"))
-                self._renderer.print_status(
-                    f"  💾 Exported: {', '.join(str(p) for p in paths)}"
-                )
-            else:
-                self._renderer.print_status(
-                    "  💾 Use -o <path> to export (e.g., -o report.pdf)"
-                )
-            return
+        # ── Agent-based routing ──
+        if selection.agent in ("user", "system"):
+            self._renderer.print_status(
+                f"  📝 Action {index} assigned to you - skipping AI execution"
+            )
+            return ActionResult(
+                action=action, status=ActionStatus.SKIPPED,
+                agent_used=selection.agent, mode_used=selection.mode,
+            )
 
+        # ── AI agent execution (EXECUTE / PLAN) ──
         instruction = (
             "Execute this action now. Make changes, write files, run commands as needed."
             if selection.mode == ActionMode.EXECUTE
@@ -437,11 +455,40 @@ class DebateService:
 
         with self._renderer.agent_spinner(selection.agent):
             try:
-                exec_result = self._agent_registry.get_client(selection.agent).run(
+                exec_output = self._agent_registry.get_client(selection.agent).run(
                     exec_prompt,
-                    allow_tools=(selection.mode == ActionMode.EXECUTE),
+                    allow_tools=(config.allow_tools and selection.mode == ActionMode.EXECUTE),
                 )
             except Exception as exc:
                 self._renderer.print_status(f"  ⚠️  Action {index} failed: {exc}")
-                return
-        self._renderer.print_agent(selection.agent, exec_result)
+                return ActionResult(
+                    action=action, status=ActionStatus.FAILED,
+                    agent_used=selection.agent, mode_used=selection.mode,
+                    error=str(exc),
+                )
+        self._renderer.print_agent(selection.agent, exec_output)
+        return ActionResult(
+            action=action, status=ActionStatus.COMPLETED,
+            agent_used=selection.agent, mode_used=selection.mode,
+            output=exec_output,
+        )
+
+    def _safe_export(self, result: DebateResult, output_path: Path) -> None:
+        """Export with error handling — never crash, never lose debate data."""
+        try:
+            self._do_export(result, output_path)
+        except Exception as exc:
+            self._renderer.print_status(f"  ⚠️  Export failed: {exc}")
+            self._renderer.print_status("  ℹ️  Your debate data is preserved in the session.")
+
+    def _do_export(self, result: DebateResult, output_path: Path) -> None:
+        """Export the report including action results."""
+        if self._report_writer:
+            paths = self._report_writer.write(result, output_path)
+            self._renderer.print_status(
+                f"  💾 Exported: {', '.join(str(p) for p in paths)}"
+            )
+        else:
+            self._renderer.print_status(
+                "  💾 Report writer not available. Use -o <path> at startup."
+            )
